@@ -1,0 +1,32 @@
+{
+  "name": "domorph-agent",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@langchain/anthropic": "^0.3.20",
+    "@langchain/community": "^0.0.34",
+    "@langchain/core": "^0.3.56",
+    "@langchain/langgraph": "^0.2.72",
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2",
+    "p-limit": "^4.0.0",
+    "puppeteer": "^21.11.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "zod": "^3.25.7",
+    "zod-to-json-schema": "^3.24.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
