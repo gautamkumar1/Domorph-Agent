@@ -151,7 +151,7 @@ async function scrapePage(browser, url, baseDir, visited, queue) {
         const imagePath = path.join(assetDir, imageName);
         const buffer = await response.buffer();
         await fs.writeFile(imagePath, buffer);
-        const localPath = `http://localhost:3000/scraped_website/assets/${imageName}`;
+        const localPath = `/scraped_website/assets/${imageName}`;
         localImagePaths.push(localPath);
       } catch (err) {
         console.warn(`Image download failed: ${imageUrl}, ${err.message}`);
@@ -181,7 +181,7 @@ async function scrapePage(browser, url, baseDir, visited, queue) {
         const urlObj = new URL(srcUrl, page.url());
         const filename = path.basename(urlObj.pathname);
         const jsPath = path.join(jsDir, filename);
-        const localUrl = `http://localhost:3000/scraped_website/assets/js/${filename}`;
+        const localUrl = `/scraped_website/assets/js/${filename}`;
         const res = await fetch(urlObj.href);
         if (!res.ok) throw new Error(`JS fetch failed: ${urlObj.href}`);
         const buffer = await res.buffer();
@@ -283,14 +283,7 @@ export const webScraping = async (url) => {
     return { message: "Invalid or missing URL." };
   }
 
-  const baseDir = path.join(
-    __dirname,
-    "..",
-    "..",
-    "client",
-    "public",
-    "scraped_website"
-  );
+  const baseDir = path.join(process.cwd(), "scraped_website");
   await fs.mkdir(baseDir, { recursive: true });
 
   const visited = new Set();
