@@ -10,48 +10,8 @@ const userThreads = new Map();
 // Initialize the agent (should be configured with your Anthropic API key)
 let agent = null;
 
-// Middleware to check if agent is initialized
-const checkAgent = (req, res, next) => {
-  if (!agent) {
-    return res.status(500).json({ 
-      error: true, 
-      message: "Agent not initialized. Please configure API keys" 
-    });
-  }
-  next();
-};
-
-// Route to set API keys
-router.post('/configure', (req, res) => {
-  console.log(JSON.stringify(req.body));
-  const { anthropicKey } = req.body;
-  
-  if (!anthropicKey) {
-    return res.status(400).json({ 
-      error: true, 
-      message: "Anthropic API key is required" 
-    });
-  }
-  
-  try {
-    console.log("⚙️ Configuring agent with API keys...");
-    agent = createAgent(anthropicKey);
-    res.json({ 
-      success: true, 
-      message: "Agent configured successfully" 
-    });
-  } catch (error) {
-    console.error("❌ Error configuring agent:", error);
-    res.status(500).json({ 
-      error: true, 
-      message: `Error configuring agent: ${error.message}` 
-    });
-  }
-});
-
 // Route to interact with the agent
-router.post('/chat', checkAgent, async (req, res) => {
-  console.log(JSON.stringify(req.body));
+router.post('/chat', async (req, res) => {
   try {
     const { message, userId = 'default' } = req.body;
     
@@ -60,6 +20,28 @@ router.post('/chat', checkAgent, async (req, res) => {
         error: true, 
         message: "Message is required" 
       });
+    }
+
+    // Initialize agent if not already done
+    if (!agent) {
+      const anthropicKey = process.env.ANTHROPIC_API_KEY;
+      if (!anthropicKey) {
+        return res.status(500).json({ 
+          error: true, 
+          message: "ANTHROPIC_API_KEY environment variable not set" 
+        });
+      }
+      
+      try {
+        console.log("⚙️ Auto-configuring agent with API key from environment...");
+        agent = createAgent(anthropicKey);
+      } catch (error) {
+        console.error("❌ Error configuring agent:", error);
+        return res.status(500).json({ 
+          error: true, 
+          message: `Error configuring agent: ${error.message}` 
+        });
+      }
     }
 
     console.log(`📩 Received message from user ${userId}: ${message}`);
