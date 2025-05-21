@@ -1,6 +1,7 @@
 import express from 'express';
-import { createAgent, extractUrl } from './agent.js';
-import { HumanMessage } from "@langchain/core/messages";
+import { createAgent, extractUrl, extractHtmlUpdateCommand } from './agent.js';
+import { HumanMessage, AIMessage } from "@langchain/core/messages";
+import { updateHtml } from './tools.js';
 
 const router = express.Router();
 
@@ -52,15 +53,51 @@ router.post('/chat', async (req, res) => {
     }
     
     const threadMessages = userThreads.get(userId);
-    const humanMessage = new HumanMessage(message);
+
+    // IMPORTANT: First check if the message is an HTML update command - handle it directly
+    const htmlUpdate = extractHtmlUpdateCommand(message);
+    if (htmlUpdate) {
+      console.log(`🔄 Detected HTML update command:`, htmlUpdate);
+      console.log(`   File: ${htmlUpdate.file}`);
+      console.log(`   Replace: "${htmlUpdate.oldText}" with "${htmlUpdate.newText}"`);
+      
+      try {
+        // Directly handle the HTML update command
+        console.log("🔧 Executing HTML update directly, bypassing agent");
+        const result = await updateHtml(htmlUpdate.file, htmlUpdate.oldText, htmlUpdate.newText);
+        
+        // Create an AI message with the result and add to conversation
+        const updateMessage = new HumanMessage(message);
+        const responseContent = `HTML update ${result.success ? 'successful' : 'failed'}: ${result.message}`;
+        const updateResponse = new AIMessage({
+          content: responseContent
+        });
+        
+        // Add the messages to the thread
+        threadMessages.push(updateMessage);
+        threadMessages.push(updateResponse);
+        
+        // Send response
+        console.log(`✅ HTML update completed: ${responseContent}`);
+        return res.json({ 
+          response: responseContent,
+          threadId: userId,
+          result
+        });
+      } catch (error) {
+        console.error(`❌ Error updating HTML:`, error);
+        // Continue with regular processing if update fails
+      }
+    }
     
-    // Check if the message contains a URL
+    // Check if the message contains a URL (for scraping)
     const url = extractUrl(message);
     if (url) {
       console.log(`🌐 Detected URL in message: ${url}`);
     }
     
     // Update thread with new message
+    const humanMessage = new HumanMessage(message);
     threadMessages.push(humanMessage);
     
     // Invoke the agent

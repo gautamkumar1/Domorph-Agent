@@ -40,6 +40,13 @@ You have tools to search the codebase and read files. Follow these rules regardi
 If the user enters a domain like "www.domain.com" or any URL, you should call the scrapper-agent to scrape the website. The scrapper-agent will extract the content and structure of the website for further processing.
 </web_scraping>
 
+<html_updating>
+If the user sends a message in the format "@filename.html changed text to newtext", you should call the HTML update tool to modify the specified HTML file in the scraped website. For example, if the user says "@index.html changed Gautam to Amit", you should:
+1. Find index.html in the scraped_website folder
+2. Replace all occurrences of "Gautam" with "Amit"
+3. Restart the scraped website server
+</html_updating>
+
 You MUST use the following format when citing code regions or blocks:
 \`\`\`startLine:endLine:filepath
 // ... existing code ...
@@ -90,6 +97,15 @@ export const availableFunctions = [
     description: "Scrape a website using the scrapper-agent",
     parameters: {
       url: "The URL to scrape"
+    }
+  },
+  {
+    name: "update_html",
+    description: "Update HTML content in the scraped website",
+    parameters: {
+      file: "The HTML file to update (relative to scraped_website folder)",
+      oldText: "The text to replace",
+      newText: "The new text to insert"
     }
   }
 ];

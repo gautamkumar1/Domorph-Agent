@@ -362,3 +362,97 @@ export const webScraping = async (url) => {
     if (browser) await browser.close();
   }
 };
+
+export const updateHtml = async (file, oldText, newText) => {
+  console.log(`🔄 HTML Update Tool - Updating ${file}: replacing "${oldText}" with "${newText}"`);
+  
+  if (!file || !oldText || !newText) {
+    console.error("❌ Missing required parameters for HTML update");
+    return { 
+      success: false, 
+      message: "Missing required parameters. File, oldText, and newText are all required." 
+    };
+  }
+  
+  try {
+    // Construct the file path within the scraped_website directory
+    const baseDir = path.join(process.cwd(), "scraped_website");
+    const filePath = path.join(baseDir, file);
+    
+    console.log(`📂 Looking for file: ${filePath}`);
+    
+    // Check if the file exists
+    try {
+      await fs.access(filePath);
+      console.log(`✅ File exists: ${filePath}`);
+    } catch (error) {
+      console.error(`❌ File not found: ${filePath}`);
+      return { 
+        success: false, 
+        message: `File not found: ${file}` 
+      };
+    }
+    
+    // Read the file content
+    const content = await fs.readFile(filePath, 'utf-8');
+    console.log(`📄 Read file content (${content.length} chars)`);
+    
+    // Check if the text to replace exists in the file
+    if (!content.includes(oldText)) {
+      console.warn(`⚠️ Text "${oldText}" not found in ${file}`);
+      
+      // Additional debugging: Show sample of file content
+      const preview = content.substring(0, 200) + "...";
+      console.log(`📝 File content preview: ${preview}`);
+      
+      return { 
+        success: false, 
+        message: `Text "${oldText}" not found in ${file}` 
+      };
+    }
+    
+    console.log(`✅ Found text "${oldText}" in the file`);
+    
+    // Replace the text
+    const updatedContent = content.replace(new RegExp(oldText, 'g'), newText);
+    
+    // Write the updated content back to the file
+    await fs.writeFile(filePath, updatedContent, 'utf-8');
+    console.log(`✅ Successfully updated ${file}`);
+    
+    // Restart the server if it's running
+    if (websiteServer) {
+      console.log("🔄 Restarting scraped website server...");
+      await new Promise(resolve => websiteServer.close(resolve));
+      
+      // Start the server on port 3030
+      const app = express();
+      app.use('/scraped_website', express.static(baseDir));
+      
+      // Create an index route that redirects to the scraped website
+      app.get('/', (req, res) => {
+        res.redirect('/scraped_website/index.html');
+      });
+      
+      const port = 3030;
+      websiteServer = app.listen(port, () => {
+        console.log(`✅ Scraped website restarted at http://localhost:${port}/scraped_website/`);
+      });
+    } else {
+      console.log("⚠️ Website server not running, no restart needed");
+    }
+    
+    return { 
+      success: true, 
+      message: `Successfully updated "${oldText}" to "${newText}" in ${file}`,
+      serverUrl: `http://localhost:3030/scraped_website/` 
+    };
+    
+  } catch (error) {
+    console.error("❌ Error updating HTML:", error);
+    return { 
+      success: false, 
+      message: `Error updating HTML: ${error.message}` 
+    };
+  }
+};

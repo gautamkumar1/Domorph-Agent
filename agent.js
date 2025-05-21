@@ -3,10 +3,44 @@ import { ChatAnthropic } from "@langchain/anthropic";
 import { HumanMessage, AIMessage } from "@langchain/core/messages";
 import { StateGraph,MessagesAnnotation } from "@langchain/langgraph";
 import { MemorySaver } from "@langchain/langgraph"; 
-import { webScraping } from "./tools.js";
+import { webScraping, updateHtml } from "./tools.js";
 import { systemPrompt } from "./system-prompt.js";
+
+// Regex for parsing HTML update commands
+const UPDATE_HTML_REGEX = /@(\S+\.html)\s+changed\s+(?:the\s+)?(.+?)\s+to\s+(.+?)(?:\s|$)/i;
+
+// Function to parse HTML update commands from messages
+function parseHtmlUpdateCommand(message) {
+  if (typeof message !== 'string') return null;
+  
+  const match = message.match(UPDATE_HTML_REGEX);
+  if (match) {
+    console.log("📝 Detected HTML update command in message");
+    return {
+      file: match[1],
+      oldText: match[2],
+      newText: match[3]
+    };
+  }
+  return null;
+}
+
 function getToolUseUrl(messages) {
   console.log("Trying to extract URL from messages, count:", messages.length);
+  
+  // First check if the latest message is an HTML update command
+  if (messages.length > 0) {
+    const lastMsg = messages[messages.length - 1];
+    
+    // Check if it's an HTML update message
+    if (lastMsg instanceof HumanMessage && typeof lastMsg.content === "string") {
+      const htmlUpdate = parseHtmlUpdateCommand(lastMsg.content);
+      if (htmlUpdate) {
+        console.log("📝 This is an HTML update command, not a URL for scraping");
+        return null; // Don't treat HTML update commands as URLs
+      }
+    }
+  }
   
   // First check the most recent message for direct URL mentions
   if (messages.length > 0) {
@@ -190,6 +224,71 @@ const websiteScraper = {
   },
 };
 
+// Create a tool that wraps the updateHtml function
+const htmlUpdater = {
+  name: "update_html",
+  description: "Updates HTML content in the scraped website and restarts the server",
+  schema: {
+    type: "object",
+    properties: {
+      file: {
+        type: "string",
+        description: "The HTML file to update (relative to scraped_website folder)",
+      },
+      oldText: {
+        type: "string",
+        description: "The text to replace",
+      },
+      newText: {
+        type: "string",
+        description: "The new text to insert",
+      },
+    },
+    required: ["file", "oldText", "newText"],
+  },
+  invoke: async (args) => {
+    console.log(`🔄 Updating HTML content - received args:`, JSON.stringify(args));
+    
+    let file, oldText, newText;
+    
+    if (typeof args === 'string') {
+      // Try to parse from string using regex
+      const parsed = parseHtmlUpdateCommand(args);
+      if (parsed) {
+        file = parsed.file;
+        oldText = parsed.oldText;
+        newText = parsed.newText;
+      } else {
+        return { 
+          success: false, 
+          message: "Invalid string format. Expected '@file.html changed text to newtext'." 
+        };
+      }
+    } else if (args && typeof args === 'object') {
+      // Extract from object
+      file = args.file;
+      oldText = args.oldText;
+      newText = args.newText;
+    } else {
+      return { 
+        success: false, 
+        message: "Invalid arguments format." 
+      };
+    }
+    
+    // Validate parameters
+    if (!file || !oldText || !newText) {
+      return { 
+        success: false, 
+        message: "Missing required parameters: file, oldText, and newText must all be provided." 
+      };
+    }
+    
+    console.log(`Calling updateHtml with: file=${file}, oldText=${oldText}, newText=${newText}`);
+    return await updateHtml(file, oldText, newText);
+  },
+};
+
 // Create an Anthropic model
 export const createAgent = (apiKey) => {
   if (!apiKey) {
@@ -206,7 +305,7 @@ export const createAgent = (apiKey) => {
     systemPrompt
   });
 
-  const tools = [websiteScraper];
+  const tools = [websiteScraper, htmlUpdater];
   const toolNode = new ToolNode(tools);
 
   // Custom handler for tool execution that provides better debugging
@@ -216,21 +315,37 @@ export const createAgent = (apiKey) => {
     
     let toolCalls = [];
     
-    // Extract tool calls from standard format
-    if (lastMessage.tool_calls && Array.isArray(lastMessage.tool_calls)) {
-      toolCalls = lastMessage.tool_calls;
-      console.log("Found standard tool_calls format", toolCalls.length);
-    } 
-    // Extract tool calls from content array format
-    else if (Array.isArray(lastMessage.content)) {
-      for (const content of lastMessage.content) {
-        if (content.type === "tool_use") {
-          toolCalls.push({
-            name: content.tool_name,
-            args: content.input,
-            id: content.id || `tool-${Date.now()}`
-          });
-          console.log("Found tool_use in content array");
+    // Check if the last message is a direct HTML update command
+    if (lastMessage instanceof HumanMessage && typeof lastMessage.content === "string") {
+      const htmlUpdate = parseHtmlUpdateCommand(lastMessage.content);
+      if (htmlUpdate) {
+        console.log("🔄 Detected HTML update command in executeTools:", htmlUpdate);
+        toolCalls.push({
+          name: "update_html",
+          args: htmlUpdate,
+          id: `tool-${Date.now()}`
+        });
+      }
+    }
+    
+    // If no HTML update command was detected, extract tool calls as usual
+    if (toolCalls.length === 0) {
+      // Extract tool calls from standard format
+      if (lastMessage.tool_calls && Array.isArray(lastMessage.tool_calls)) {
+        toolCalls = lastMessage.tool_calls;
+        console.log("Found standard tool_calls format", toolCalls.length);
+      } 
+      // Extract tool calls from content array format
+      else if (Array.isArray(lastMessage.content)) {
+        for (const content of lastMessage.content) {
+          if (content.type === "tool_use") {
+            toolCalls.push({
+              name: content.tool_name,
+              args: content.input,
+              id: content.id || `tool-${Date.now()}`
+            });
+            console.log("Found tool_use in content array");
+          }
         }
       }
     }
@@ -254,6 +369,18 @@ export const createAgent = (apiKey) => {
       }
       
       try {
+        // Special handling for the update_html tool
+        if (toolCall.name === "update_html") {
+          console.log("📄 Handling HTML update tool call with args:", toolCall.args);
+          const result = await tool.invoke(toolCall.args);
+          results.push({
+            tool_call_id: toolCall.id,
+            name: toolCall.name,
+            result
+          });
+          continue;
+        }
+        
         // Process URL specifically for the scrape_website tool
         if (toolCall.name === "scrape_website") {
           // Get URL from args
@@ -323,6 +450,18 @@ export const createAgent = (apiKey) => {
 
     // Debug the structure of the last message
     console.log("Last message structure:", JSON.stringify(lastMessage).substring(0, 500) + "...");
+
+    // Check if this is an HTML update request
+    if (lastMessage && lastMessage.content) {
+      // If it's a human message, check if it's an HTML update command
+      if (lastMessage.type === "human" && typeof lastMessage.content === "string") {
+        const htmlUpdate = parseHtmlUpdateCommand(lastMessage.content);
+        if (htmlUpdate) {
+          console.log("👨‍💻 Detected HTML update request in user message");
+          // This should be specially handled in our tool calling logic
+        }
+      }
+    }
 
     // Check for tool_calls in the more standard format
     if (lastMessage.tool_calls && lastMessage.tool_calls.length > 0) {
@@ -420,4 +559,9 @@ export const extractUrl = (text) => {
   }
   
   return null;
+};
+
+// Additional helper function to extract HTML update command
+export const extractHtmlUpdateCommand = (text) => {
+  return parseHtmlUpdateCommand(text);
 }; 
