@@ -3,25 +3,42 @@ import { ChatAnthropic } from "@langchain/anthropic";
 import { HumanMessage, AIMessage } from "@langchain/core/messages";
 import { StateGraph,MessagesAnnotation } from "@langchain/langgraph";
 import { MemorySaver } from "@langchain/langgraph"; 
-import { webScraping, updateHtml } from "./tools.js";
+import { webScraping, updateHtml, intelligentHtmlUpdate } from "./tools.js";
 import { systemPrompt } from "./system-prompt.js";
 
 // Regex for parsing HTML update commands
 const UPDATE_HTML_REGEX = /@(\S+\.html)\s+changed\s+(?:the\s+)?(.+?)\s+to\s+(.+?)(?:\s|$)/i;
 
+// New regex for intelligent HTML updates
+const INTELLIGENT_HTML_UPDATE_REGEX = /@(\S+\.html)\s+(.+)$/i;
+
 // Function to parse HTML update commands from messages
 function parseHtmlUpdateCommand(message) {
   if (typeof message !== 'string') return null;
   
+  // Try the specific update command first
   const match = message.match(UPDATE_HTML_REGEX);
   if (match) {
-    console.log("📝 Detected HTML update command in message");
+    console.log("📝 Detected specific HTML update command in message");
     return {
+      type: "simple",
       file: match[1],
       oldText: match[2],
       newText: match[3]
     };
   }
+  
+  // Then try the general instruction format
+  const instructionMatch = message.match(INTELLIGENT_HTML_UPDATE_REGEX);
+  if (instructionMatch) {
+    console.log("🧠 Detected intelligent HTML update instruction");
+    return {
+      type: "intelligent",
+      file: instructionMatch[1],
+      instruction: instructionMatch[2]
+    };
+  }
+  
   return null;
 }
 
@@ -237,31 +254,45 @@ const htmlUpdater = {
       },
       oldText: {
         type: "string",
-        description: "The text to replace",
+        description: "The text to replace (only for simple updates)",
       },
       newText: {
         type: "string",
-        description: "The new text to insert",
+        description: "The new text to insert (only for simple updates)",
+      },
+      instruction: {
+        type: "string",
+        description: "Natural language instruction describing what to change (for intelligent updates)",
+      },
+      updateType: {
+        type: "string",
+        description: "The type of update: 'simple' or 'intelligent'",
       },
     },
-    required: ["file", "oldText", "newText"],
+    required: ["file", "updateType"],
   },
   invoke: async (args) => {
     console.log(`🔄 Updating HTML content - received args:`, JSON.stringify(args));
     
-    let file, oldText, newText;
+    let file, oldText, newText, instruction, updateType;
     
     if (typeof args === 'string') {
       // Try to parse from string using regex
       const parsed = parseHtmlUpdateCommand(args);
       if (parsed) {
         file = parsed.file;
-        oldText = parsed.oldText;
-        newText = parsed.newText;
+        updateType = parsed.type;
+        
+        if (updateType === "simple") {
+          oldText = parsed.oldText;
+          newText = parsed.newText;
+        } else if (updateType === "intelligent") {
+          instruction = parsed.instruction;
+        }
       } else {
         return { 
           success: false, 
-          message: "Invalid string format. Expected '@file.html changed text to newtext'." 
+          message: "Invalid string format." 
         };
       }
     } else if (args && typeof args === 'object') {
@@ -269,6 +300,8 @@ const htmlUpdater = {
       file = args.file;
       oldText = args.oldText;
       newText = args.newText;
+      instruction = args.instruction;
+      updateType = args.updateType || (oldText && newText ? "simple" : "intelligent");
     } else {
       return { 
         success: false, 
@@ -277,15 +310,39 @@ const htmlUpdater = {
     }
     
     // Validate parameters
-    if (!file || !oldText || !newText) {
+    if (!file || !updateType) {
       return { 
         success: false, 
-        message: "Missing required parameters: file, oldText, and newText must all be provided." 
+        message: "Missing required parameters: file and updateType must be provided." 
       };
     }
     
-    console.log(`Calling updateHtml with: file=${file}, oldText=${oldText}, newText=${newText}`);
-    return await updateHtml(file, oldText, newText);
+    if (updateType === "simple") {
+      if (!oldText || !newText) {
+        return { 
+          success: false, 
+          message: "For simple updates, oldText and newText must be provided." 
+        };
+      }
+      
+      console.log(`Calling updateHtml with: file=${file}, oldText=${oldText}, newText=${newText}`);
+      return await updateHtml(file, oldText, newText);
+    } else if (updateType === "intelligent") {
+      if (!instruction) {
+        return { 
+          success: false, 
+          message: "For intelligent updates, instruction must be provided." 
+        };
+      }
+      
+      console.log(`Calling intelligentHtmlUpdate with: file=${file}, instruction=${instruction}`);
+      return await intelligentHtmlUpdate(file, instruction);
+    } else {
+      return { 
+        success: false, 
+        message: "Invalid updateType. Must be 'simple' or 'intelligent'." 
+      };
+    }
   },
 };
 

@@ -1,7 +1,7 @@
 import express from 'express';
 import { createAgent, extractUrl, extractHtmlUpdateCommand } from './agent.js';
 import { HumanMessage, AIMessage } from "@langchain/core/messages";
-import { updateHtml } from './tools.js';
+import { updateHtml, intelligentHtmlUpdate } from './tools.js';
 
 const router = express.Router();
 
@@ -58,35 +58,69 @@ router.post('/chat', async (req, res) => {
     const htmlUpdate = extractHtmlUpdateCommand(message);
     if (htmlUpdate) {
       console.log(`🔄 Detected HTML update command:`, htmlUpdate);
-      console.log(`   File: ${htmlUpdate.file}`);
-      console.log(`   Replace: "${htmlUpdate.oldText}" with "${htmlUpdate.newText}"`);
       
-      try {
-        // Directly handle the HTML update command
-        console.log("🔧 Executing HTML update directly, bypassing agent");
-        const result = await updateHtml(htmlUpdate.file, htmlUpdate.oldText, htmlUpdate.newText);
+      if (htmlUpdate.type === "simple") {
+        console.log(`   File: ${htmlUpdate.file}`);
+        console.log(`   Replace: "${htmlUpdate.oldText}" with "${htmlUpdate.newText}"`);
         
-        // Create an AI message with the result and add to conversation
-        const updateMessage = new HumanMessage(message);
-        const responseContent = `HTML update ${result.success ? 'successful' : 'failed'}: ${result.message}`;
-        const updateResponse = new AIMessage({
-          content: responseContent
-        });
+        try {
+          // Directly handle the simple HTML update command
+          console.log("🔧 Executing simple HTML update directly, bypassing agent");
+          const result = await updateHtml(htmlUpdate.file, htmlUpdate.oldText, htmlUpdate.newText);
+          
+          // Create an AI message with the result and add to conversation
+          const updateMessage = new HumanMessage(message);
+          const responseContent = `HTML update ${result.success ? 'successful' : 'failed'}: ${result.message}`;
+          const updateResponse = new AIMessage({
+            content: responseContent
+          });
+          
+          // Add the messages to the thread
+          threadMessages.push(updateMessage);
+          threadMessages.push(updateResponse);
+          
+          // Send response
+          console.log(`✅ HTML update completed: ${responseContent}`);
+          return res.json({ 
+            response: responseContent,
+            threadId: userId,
+            result
+          });
+        } catch (error) {
+          console.error(`❌ Error updating HTML:`, error);
+          // Continue with regular processing if update fails
+        }
+      } else if (htmlUpdate.type === "intelligent") {
+        console.log(`   File: ${htmlUpdate.file}`);
+        console.log(`   Instruction: "${htmlUpdate.instruction}"`);
         
-        // Add the messages to the thread
-        threadMessages.push(updateMessage);
-        threadMessages.push(updateResponse);
-        
-        // Send response
-        console.log(`✅ HTML update completed: ${responseContent}`);
-        return res.json({ 
-          response: responseContent,
-          threadId: userId,
-          result
-        });
-      } catch (error) {
-        console.error(`❌ Error updating HTML:`, error);
-        // Continue with regular processing if update fails
+        try {
+          // Directly handle the intelligent HTML update command
+          console.log("🧠 Executing intelligent HTML update directly, bypassing agent");
+          const result = await intelligentHtmlUpdate(htmlUpdate.file, htmlUpdate.instruction);
+          
+          // Create an AI message with the result and add to conversation
+          const updateMessage = new HumanMessage(message);
+          const responseContent = `Intelligent HTML update ${result.success ? 'successful' : 'failed'}: ${result.message}`;
+          const updateResponse = new AIMessage({
+            content: responseContent
+          });
+          
+          // Add the messages to the thread
+          threadMessages.push(updateMessage);
+          threadMessages.push(updateResponse);
+          
+          // Send response
+          console.log(`✅ Intelligent HTML update completed: ${responseContent}`);
+          return res.json({ 
+            response: responseContent,
+            threadId: userId,
+            result
+          });
+        } catch (error) {
+          console.error(`❌ Error performing intelligent HTML update:`, error);
+          // Continue with regular processing if update fails
+        }
       }
     }
     

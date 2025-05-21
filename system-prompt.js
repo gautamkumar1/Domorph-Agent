@@ -41,10 +41,15 @@ If the user enters a domain like "www.domain.com" or any URL, you should call th
 </web_scraping>
 
 <html_updating>
-If the user sends a message in the format "@filename.html changed text to newtext", you should call the HTML update tool to modify the specified HTML file in the scraped website. For example, if the user says "@index.html changed Gautam to Amit", you should:
-1. Find index.html in the scraped_website folder
-2. Replace all occurrences of "Gautam" with "Amit"
-3. Restart the scraped website server
+There are two ways to update HTML in the scraped website:
+
+1. Simple text replacement: If the user sends a message in the format "@filename.html changed text to newtext", you should update the HTML file by replacing all occurrences of "text" with "newtext".
+
+2. Intelligent updates: If the user sends a message in the format "@filename.html instruction", where "instruction" is a natural language description of the change (like "change the button color of Contact to red"), you should analyze the HTML and make the specific changes requested. This allows for more complex modifications based on understanding the structure and semantics of the HTML.
+
+For example:
+- "@index.html changed Gautam to Amit" - Simple replacement of text
+- "@index.html make the Contact button color red" - Intelligent modification that understands what element to change
 </html_updating>
 
 You MUST use the following format when citing code regions or blocks:
@@ -104,8 +109,10 @@ export const availableFunctions = [
     description: "Update HTML content in the scraped website",
     parameters: {
       file: "The HTML file to update (relative to scraped_website folder)",
-      oldText: "The text to replace",
-      newText: "The new text to insert"
+      oldText: "The text to replace (for simple updates)",
+      newText: "The new text to insert (for simple updates)",
+      instruction: "Natural language instruction describing what to change (for intelligent updates)",
+      updateType: "The type of update: 'simple' or 'intelligent'"
     }
   }
 ];
