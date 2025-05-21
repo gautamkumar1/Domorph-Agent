@@ -5,8 +5,12 @@ import { fileURLToPath } from "url";
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import pLimit from "p-limit";
+import express from "express";
 
 puppeteer.use(StealthPlugin());
+
+// Track the website server
+let websiteServer = null;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -283,6 +287,12 @@ export const webScraping = async (url) => {
     return { message: "Invalid or missing URL." };
   }
 
+  // Close existing server if one is running
+  if (websiteServer) {
+    await new Promise(resolve => websiteServer.close(resolve));
+    websiteServer = null;
+  }
+
   const baseDir = path.join(process.cwd(), "scraped_website");
   await fs.mkdir(baseDir, { recursive: true });
 
@@ -301,11 +311,49 @@ export const webScraping = async (url) => {
         )
       );
     }
+    
+    // Start an Express server to serve the scraped website
+    const app = express();
+    app.use('/scraped_website', express.static(baseDir));
+    
+    // Create an index route that redirects to the scraped website
+    app.get('/', (req, res) => {
+      res.redirect('/scraped_website/index.html');
+    });
+    
+    // Start the server on port 3030
+    const port = 3030;
+    websiteServer = app.listen(port, () => {
+      console.log(`Scraped website running at http://localhost:${port}/scraped_website/`);
+    });
+    
+    // Make the server close when the process exits
+    process.on('exit', () => {
+      if (websiteServer) {
+        websiteServer.close();
+      }
+    });
+    
+    // Also handle SIGINT (Ctrl+C) and SIGTERM
+    process.on('SIGINT', () => {
+      if (websiteServer) {
+        websiteServer.close();
+      }
+      process.exit(0);
+    });
+    
+    process.on('SIGTERM', () => {
+      if (websiteServer) {
+        websiteServer.close();
+      }
+      process.exit(0);
+    });
 
     const folderStructure = await getFolderStructure(baseDir);
     return {
-      message: `Scraped ${visited.size} pages successfully.`,
+      message: `Scraped ${visited.size} pages successfully. Website running at http://localhost:3030/scraped_website/`,
       structure: folderStructure,
+      serverUrl: `http://localhost:3030/scraped_website/`
     };
   } catch (err) {
     console.error("Scraping failed:", err);
