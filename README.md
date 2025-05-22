@@ -1,14 +1,73 @@
-# Domorph-Agent: Intelligent HTML Update System
+# Domorph Agent - HTML Transformer
 
-Domorph-Agent is a powerful tool for scraping websites and making precise modifications to the HTML content using natural language instructions.
+A powerful tool for transforming HTML pages with natural language instructions, using both Claude AI and advanced CSS manipulation techniques.
 
 ## Features
 
-- **Website Scraping**: Scrape any website and host it locally
-- **Intelligent HTML Updates**: Modify HTML elements using natural language instructions
-- **Precise Element Targeting**: Find and modify specific elements like buttons by their text content
-- **AI-Powered Design**: Uses Claude to intelligently redesign HTML elements based on natural language instructions
-- **Smart Context Management**: Breaks large HTML files into semantic chunks to provide Claude with the most relevant context for modifications
+- **Intelligent HTML Transformation**: Update HTML elements or entire pages using natural language instructions
+- **Multiple Operation Types**:
+  - Single element modifications (e.g., "make the header blue")
+  - Batch operations on multiple elements (e.g., "make all buttons rounded")
+  - Full page redesigns (e.g., "redesign the entire page with a modern look")
+- **Support for Claude AI**: Enhanced transformations using Claude 3.7 Sonnet when API key is available
+- **Fallback Implementation**: Basic transformations still work without Claude API
+
+## Transformation Capabilities
+
+The HTML transformer can handle various types of transformations:
+
+### Single Element Modifications
+- Change background colors
+- Change text colors
+- Modify styles (padding, margins, borders, etc.)
+- Make elements rounded or circular
+- Change sizes (make bigger/smaller)
+- Apply modern styling (shadows, transitions, etc.)
+
+### Batch Operations
+- Apply transformations to all elements of a specific type
+- Support for various element types: buttons, links, headings, paragraphs, images, sections, inputs, etc.
+- Apply consistent styling across multiple elements
+
+### Full Page Redesigns
+- Apply comprehensive styling to the entire page
+- Make pages responsive with flexbox layouts
+- Modern typography and spacing
+- Consistent color schemes
+
+## Usage
+
+```javascript
+import { intelligentHtmlUpdate } from './tools.js';
+
+// Update a single element
+await intelligentHtmlUpdate('/index.html', 'make the header background blue and modern');
+
+// Batch operation
+await intelligentHtmlUpdate('/index.html', 'make all buttons rounded and blue');
+
+// Full page redesign
+await intelligentHtmlUpdate('/index.html', 'redesign the full page with a modern and clean look');
+```
+
+## Environment Variables
+
+- `ANTHROPIC_API_KEY`: (Optional) Set this to use Claude AI for enhanced transformations
+
+## How It Works
+
+1. The tool parses the natural language instruction to determine the operation type
+2. If Claude API is available, it uses the AI to generate optimal HTML/CSS transformations
+3. If Claude API is not available, it falls back to a rule-based implementation that handles common transformations
+4. For batch operations, it uses CSS selectors to identify and modify groups of elements
+5. For full page redesigns, it applies comprehensive styling to create a modern, responsive design
+
+## Future Enhancements
+
+- Support for more complex transformations
+- Enhanced element targeting for more specific modifications
+- Animation and transition effects
+- Support for theme-based redesigns
 
 ## Natural Language Capabilities
 
@@ -26,6 +85,8 @@ Domorph-Agent now supports v0-like natural language commands for modifying web p
 @about.html change the main heading to "Our Amazing Team"
 @products.html update the pricing from $99 to $89
 @talk.html make the Send button background white and text black
+@index.html change all buttons to have rounded corners and blue background
+@contact.html redesign the entire page with a modern dark theme
 ```
 
 The system handles these commands by:
@@ -36,7 +97,7 @@ The system handles these commands by:
 
 ## HTML Update Commands
 
-There are two ways to update HTML in the scraped website:
+There are three main types of updates you can perform:
 
 ### 1. Simple Text Replacement
 
@@ -53,9 +114,9 @@ Example:
 
 This will replace all occurrences of "Gautam" with "Amit" in the index.html file.
 
-### 2. Intelligent Element Updates
+### 2. Targeted Element Updates
 
-For more precise updates to specific elements, use natural language:
+For precise updates to specific elements:
 
 ```
 @filename.html instruction about what to change
@@ -68,11 +129,58 @@ Examples:
 @contact.html update the email address to contact@example.com
 ```
 
-The system will:
-1. Parse your instruction
-2. Identify the target element
-3. Generate the appropriate HTML changes
-4. Apply them precisely
+### 3. Batch Element Updates
+
+To update multiple elements of the same type at once:
+
+```
+@filename.html change all [element type] to [desired changes]
+```
+
+Examples:
+```
+@index.html make all buttons red with white text
+@about.html change all headings to uppercase and dark blue
+@products.html make all images have rounded corners and borders
+```
+
+### 4. Full Page Redesigns
+
+To completely transform an entire page:
+
+```
+@filename.html redesign the entire page [with additional instructions]
+```
+
+Examples:
+```
+@index.html redesign the entire page with a dark modern theme
+@about.html completely redesign the page to be more professional and corporate
+@landing.html redesign the whole page with a minimalist aesthetic
+```
+
+## How It Works
+
+### Targeted Element Updates
+The system identifies specific elements by:
+1. Parsing your instruction
+2. Identifying the target element
+3. Generating the appropriate HTML changes
+4. Applying them precisely
+
+### Batch Operations
+For updating multiple elements at once:
+1. Uses advanced selector patterns to identify groups of elements (like "all buttons")
+2. Extracts sample elements to send to Claude
+3. Generates both CSS rules and HTML modifications
+4. Applies changes consistently across all matching elements
+
+### Full Page Redesigns
+For complete page transformations:
+1. Detects "redesign" intent in your instructions
+2. Sends the entire page HTML to Claude with specific redesign guidelines
+3. Applies comprehensive visual changes while preserving functionality
+4. Maintains all original content, IDs, and core structure
 
 ## How Context Management Works
 

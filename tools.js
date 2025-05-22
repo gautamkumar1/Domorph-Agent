@@ -9,6 +9,9 @@ import express from "express";
 import * as cheerio from 'cheerio';
 import { diff_match_patch } from 'diff-match-patch';
 
+// Add the import for the html-transformer
+import { transformHtml, findRelevantElement } from './html-transformer.js';
+
 puppeteer.use(StealthPlugin());
 
 // Track the website server
@@ -651,98 +654,39 @@ async function designElementChange(originalElement, instruction) {
   }
   
   // Extract the operation type from the instruction for better prompting
-  const isColorChange = instruction.match(/(?:colou?r|background|bg)\s+(?:to\s+)?(\w+)/i);
-  const isRedesign = instruction.match(/redesign|make\s+(?:it|this)\s+(?:more|better|nicer)/i);
+  const isColorChange = instruction.match(/(?:colou?r|background|bg)\\s+(?:to\\s+)?(\\w+)/i);
+  const isRedesign = instruction.match(/redesign|make\\s+(?:it|this)\\s+/i);
   
-  // Create a more specific prompt based on instruction type
-  let promptContent;
-  
+  let promptStrategy;
   if (isColorChange) {
-    // For color changes, be very specific
-    promptContent = `
-You are an expert web designer and HTML/CSS specialist. Your task is to modify an HTML element's color based on the user instruction.
-
-ORIGINAL HTML ELEMENT:
-\`\`\`html
-${originalElement}
-\`\`\`
-
-USER INSTRUCTION: "${instruction}"
-
-Your task:
-1. ONLY modify the color properties specified in the instruction (text color or background color)
-2. DO NOT add any new elements or remove existing ones
-3. Preserve ALL existing classes, IDs, and other attributes
-4. Return ONLY the modified HTML element
-
-Rules for color changes:
-- If the instruction mentions "background color" or "bg color", modify the background-color CSS property
-- If the instruction just mentions "color", modify the color (text color) CSS property
-- Add the color either as an inline style or by adding/modifying a class as appropriate
-- Use the exact color specified in the instruction
-
-Modified HTML element:`;
+    promptStrategy = "color modification";
   } else if (isRedesign) {
-    // For redesign requests, emphasize modifying not adding
-    promptContent = `
-You are an expert web designer and HTML/CSS specialist. Your task is to redesign an existing HTML element based on the user instruction.
-
-ORIGINAL HTML ELEMENT:
-\`\`\`html
-${originalElement}
-\`\`\`
-
-USER INSTRUCTION: "${instruction}"
-
-Your task:
-1. MODIFY the EXISTING element - DO NOT create or add new elements
-2. Preserve the element type, ID, and essential attributes
-3. You can add or modify classes and styles to improve the design
-4. You can modify the element's content if requested, but keep the same basic content
-5. Ensure the element's functionality is maintained
-6. Return ONLY the modified HTML element
-
-Example of acceptable changes:
-- Adding inline styles
-- Modifying existing style attributes
-- Adding CSS classes for styling
-- Tweaking the element structure while keeping its core functionality
-- Adjusting padding, margins, borders, etc.
-
-Example of unacceptable changes:
-- Adding completely new elements
-- Changing a button to a div or another element type
-- Removing important attributes like onclick handlers
-- Completely changing the element's content unless specifically requested
-
-Modified HTML element:`;
+    promptStrategy = "visual redesign";
   } else {
-    // Generic prompt for other types of changes
-    promptContent = `
-You are an expert web designer and HTML/CSS specialist. Your task is to modify an HTML element based on a user instruction.
-
-ORIGINAL HTML ELEMENT:
-\`\`\`html
-${originalElement}
-\`\`\`
-
-USER INSTRUCTION: "${instruction}"
-
-Your task:
-1. Apply ONLY the requested changes to this HTML element
-2. DO NOT add new elements - modify the existing one
-3. Maintain all existing classes, IDs, and attributes except what needs to be changed
-4. Follow modern web design principles
-5. Ensure the element remains functional
-6. Return ONLY the modified HTML element with no explanation
-
-Modified HTML element:`;
+    promptStrategy = "general update";
   }
   
+  // Build the prompt for Claude
+  const promptParts = [
+    `You are an expert web designer updating an HTML element. You need to modify the following HTML element according to this instruction: "${instruction}"`,
+    ``,
+    `Current HTML element:`,
+    `\`\`\`html`,
+    originalElement,
+    `\`\`\``,
+    ``,
+    `IMPORTANT INSTRUCTIONS:`,
+    `1. Return ONLY the modified HTML with NO explanation or markdown`,
+    `2. Preserve all functionality (IDs, event handlers, attributes)`,
+    `3. Only modify what's needed to fulfill the instruction`,
+    `4. Maintain the same basic structure and content`,
+    `5. Don't use utility class names like p-8 or text-lg`,
+    `6. Don't add any comments or explanations in your response`,
+    `7. The entire response should only be the HTML element, nothing else`
+  ];
+  
   try {
-    // Send request to Claude
-    console.log(`🤖 Sending request to Anthropic API to design element change...`);
-    
+    // Call Claude to get the redesigned element
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -752,35 +696,46 @@ Modified HTML element:`;
       },
       body: JSON.stringify({
         model: 'claude-3-7-sonnet-20250219',
-        max_tokens: 1000,
+        max_tokens: 1500,
         temperature: 0.2,
+        system: "You are a web designer who modifies HTML elements. Respond with only the modified HTML element without explanations or markdown. Never add any text before or after the HTML code.",
         messages: [
           {
             role: 'user',
-            content: promptContent
+            content: promptParts.join('\n')
           }
         ]
       })
     });
     
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`❌ Anthropic API error: ${response.status}`, errorText);
-      throw new Error(`Error from Anthropic API: ${response.status}`);
+      throw new Error(`API call failed with status: ${response.status}`);
     }
     
     const result = await response.json();
-    const modifiedElement = result.content[0].text.trim();
+    let modifiedElement = result.content[0].text;
     
-    // Remove any markdown code block formatting if present
-    const cleanElement = modifiedElement.replace(/```(?:html)?\s*([\s\S]*?)\s*```/g, '$1').trim();
+    // Clean up the response
+    modifiedElement = modifiedElement
+      .replace(/```(?:html)?|```/g, '') // Remove markdown code blocks
+      .trim();
     
-    console.log(`✅ Successfully designed element change`);
-    console.log(`Modified element: ${cleanElement.substring(0, 100)}...`);
+    // Ensure we're actually getting HTML back and not an explanation
+    if (!modifiedElement.startsWith('<')) {
+      // If Claude gave us an explanation, extract just the HTML
+      const htmlMatch = modifiedElement.match(/<[^>]+>[\s\S]*<\/[^>]+>/);
+      if (htmlMatch) {
+        modifiedElement = htmlMatch[0];
+      } else {
+        throw new Error("Claude returned an explanation instead of HTML");
+      }
+    }
     
-    return cleanElement;
+    console.log(`✅ Received modified element from Claude (${modifiedElement.length} chars)`);
+    return modifiedElement;
+    
   } catch (error) {
-    console.error(`❌ Error designing element change:`, error);
+    console.error(`❌ Error redesigning element with Claude: ${error.message}`);
     throw error;
   }
 }
@@ -970,7 +925,665 @@ async function buildContextPrompt(file, instruction, maxTokens = 60000) {
   }
 }
 
-// Enhanced intelligentHtmlUpdate function to use context-aware prompts
+// Add a function to parse batch operations and advanced selectors from natural language
+function parseAdvancedSelectors(instruction) {
+  console.log(`🔍 Analyzing instruction for advanced selectors: "${instruction}"`);
+  
+  const result = {
+    isBatchOperation: false,
+    isFullPageRedesign: false,
+    selectors: [],
+    instruction: instruction
+  };
+  
+  // Check for full page redesign patterns
+  const fullPagePatterns = [
+    /redesign (the )?full page/i,
+    /redesign (the )?entire page/i,
+    /redesign (the )?whole page/i,
+    /change (the )?layout of/i,
+    /completely redesign/i,
+    /overhaul the/i,
+    /redo the (entire|whole)/i
+  ];
+  
+  for (const pattern of fullPagePatterns) {
+    if (pattern.test(instruction)) {
+      result.isFullPageRedesign = true;
+      break;
+    }
+  }
+  
+  // Check for batch operations with "all" pattern
+  const allPattern = /\b(all|every)\s+(\w+)s?\b/i;
+  const allMatch = instruction.match(allPattern);
+  
+  if (allMatch) {
+    result.isBatchOperation = true;
+    const elementType = allMatch[2].toLowerCase();
+    
+    // Map common element types to their selectors
+    const elementMappings = {
+      'button': 'button, .btn, .button, a[role="button"], input[type="button"], input[type="submit"]',
+      'link': 'a',
+      'input': 'input',
+      'image': 'img',
+      'heading': 'h1, h2, h3, h4, h5, h6',
+      'paragraph': 'p',
+      'header': 'header',
+      'footer': 'footer',
+      'section': 'section',
+      'card': '.card, .box, .panel',
+      'icon': 'i, .icon, svg',
+      'menu': 'nav, .menu, .navbar',
+      'field': 'input, textarea, select',
+      'form': 'form'
+    };
+    
+    // Add the appropriate selector
+    if (elementMappings[elementType]) {
+      result.selectors.push(elementMappings[elementType]);
+    } else {
+      // For unknown elements, use the element name as tag
+      result.selectors.push(elementType);
+    }
+  }
+  
+  // Check for specific element groups by color, size, or style
+  const attributePatterns = [
+    { regex: /(\w+)\s+with\s+color\s+(\w+)/i, selector: (matches) => `${matches[1]}[style*="color: ${matches[2]}"], ${matches[1]}[class*="${matches[2]}"]` },
+    { regex: /(\w+)\s+with\s+background\s+(\w+)/i, selector: (matches) => `${matches[1]}[style*="background: ${matches[2]}"], ${matches[1]}[style*="background-color: ${matches[2]}"], ${matches[1]}[class*="${matches[2]}-bg"]` },
+    { regex: /(\w+)\s+in\s+the\s+(\w+)/i, selector: (matches) => `.${matches[2]} ${matches[1]}, #${matches[2]} ${matches[1]}` }
+  ];
+  
+  attributePatterns.forEach(pattern => {
+    const matches = instruction.match(pattern.regex);
+    if (matches) {
+      result.isBatchOperation = true;
+      result.selectors.push(pattern.selector(matches));
+    }
+  });
+  
+  return result;
+}
+
+// Fix fullPageRedesign function to improve prompt instructions
+async function fullPageRedesign(html, instruction) {
+  console.log(`🎨 Performing full page redesign based on: "${instruction}"`);
+  
+  // Get Anthropic API key
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (!anthropicKey) {
+    throw new Error("Missing ANTHROPIC_API_KEY environment variable");
+  }
+  
+  try {
+    // Create a prompt specifically for full page redesign - with more explicit instructions
+    const promptParts = [
+      `You are an expert web designer and developer. You have been asked to redesign an HTML page according to the following instruction:`,
+      `"${instruction}"`,
+      ``,
+      `The current HTML is:`,
+      `\`\`\`html`,
+      html.substring(0, 100000), // Include as much of the HTML as we can within token limits
+      `\`\`\``,
+      ``,
+      `EXTREMELY IMPORTANT GUIDELINES:`,
+      `1. RETURN ONLY THE FULL HTML WITH NO EXPLANATION, COMMENTARY, OR MARKDOWN. Just return the raw HTML document.`,
+      `2. Preserve all functionality, IDs, form actions, and core structure`,
+      `3. Maintain all content and text unless explicitly told to change it`,
+      `4. Focus on visual improvements like colors, spacing, typography, and layout`,
+      `5. Use standard CSS classes and properties, NOT utility classes like "p-8" or "text-lg" directly in selectors`,
+      `6. You can add classes but keep original class names where possible`,
+      `7. Make sure all scripts and important attributes are preserved`,
+      `8. DO NOT prefix your response with phrases like "Here's the redesigned HTML" or similar explanations`,
+      `9. Start your response with <!DOCTYPE html> and end with </html> with no other text`
+    ];
+    
+    // Call Claude with the redesign prompt
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': anthropicKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-3-7-sonnet-20250219',
+        max_tokens: 4000,
+        temperature: 0.3,
+        system: "You are an expert web designer who responds with clean, valid HTML code only. Never include explanations or commentary. Your response should start with <!DOCTYPE html> and contain only HTML code.",
+        messages: [
+          {
+            role: 'user',
+            content: promptParts.join('\n')
+          }
+        ]
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Error from Anthropic API: ${response.status}`);
+    }
+    
+    const result = await response.json();
+    let redesignedHtml = result.content[0].text;
+    
+    // Ensure we're getting a proper HTML document
+    if (!redesignedHtml.trim().startsWith('<!DOCTYPE') && 
+        !redesignedHtml.trim().startsWith('<html') && 
+        !redesignedHtml.trim().startsWith('<head') && 
+        !redesignedHtml.trim().startsWith('```html')) {
+      console.error("Response doesn't appear to be valid HTML:", redesignedHtml.substring(0, 100));
+      throw new Error("Claude did not return valid HTML");
+    }
+    
+    // Clean up the response (remove markdown and any explanations)
+    const cleanHtml = redesignedHtml
+      .replace(/```(?:html)?\s*([\s\S]*?)\s*```/g, '$1')
+      .trim();
+    
+    return cleanHtml;
+  } catch (error) {
+    console.error("Error in full page redesign:", error);
+    throw error;
+  }
+}
+
+// Fix batchElementUpdate function to handle CSS more carefully
+async function batchElementUpdate(html, selectors, instruction) {
+  console.log(`🔄 Performing batch update on elements matching: ${selectors.join(', ')}`);
+  
+  // Get Anthropic API key
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (!anthropicKey) {
+    throw new Error("Missing ANTHROPIC_API_KEY environment variable");
+  }
+  
+  // Load the HTML with cheerio
+  const $ = cheerio.load(html);
+  
+  // Find all elements matching the selectors
+  const elements = [];
+  selectors.forEach(selector => {
+    try {
+      $(selector).each((i, el) => {
+        elements.push({
+          selector: selector,
+          html: $.html(el),
+          index: i
+        });
+      });
+    } catch (error) {
+      console.warn(`Error finding elements with selector "${selector}": ${error.message}`);
+      // Continue with other selectors
+    }
+  });
+  
+  console.log(`Found ${elements.length} elements matching the selectors`);
+  
+  if (elements.length === 0) {
+    throw new Error(`No elements found matching selectors: ${selectors.join(', ')}`);
+  }
+  
+  // If there are too many elements, just get the first few as examples
+  const maxExamples = 5;
+  const examples = elements.length > maxExamples ? elements.slice(0, maxExamples) : elements;
+  
+  // Create a prompt for batch updating elements - with improved instructions
+  const promptParts = [
+    `You are an expert web designer modifying HTML elements. You need to update ALL elements of a certain type according to this instruction:`,
+    `"${instruction}"`,
+    ``,
+    `Here are ${examples.length} examples of the elements you need to modify (there are ${elements.length} total):`,
+  ];
+  
+  examples.forEach((element, i) => {
+    promptParts.push(`Example ${i+1}:`);
+    promptParts.push('```html');
+    promptParts.push(element.html);
+    promptParts.push('```');
+    promptParts.push('');
+  });
+  
+  promptParts.push(`Please provide a CSS rule that can be applied to the selector "${selectors.join(', ')}" to achieve the requested change.`);
+  promptParts.push('Also provide one example of how the HTML for the first element should be modified, if HTML changes are needed.');
+  promptParts.push('');
+  promptParts.push('IMPORTANT: Use only standard CSS properties and valid CSS syntax. DO NOT use utility class names like p-8, text-lg, etc. as selectors.');
+  promptParts.push('');
+  promptParts.push('Format your answer exactly as follows with no additional text or explanation:');
+  promptParts.push('```css');
+  promptParts.push('/* CSS rule here */');
+  promptParts.push('```');
+  promptParts.push('```html');
+  promptParts.push('<!-- HTML example here -->');
+  promptParts.push('```');
+  
+  // Call Claude to get the modifications
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': anthropicKey,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify({
+      model: 'claude-3-7-sonnet-20250219',
+      max_tokens: 2000,
+      temperature: 0.2,
+      system: "You are a CSS and HTML expert. Respond only with code blocks for CSS and HTML without any explanation. Use only standard CSS properties, not utility class names as selectors.",
+      messages: [
+        {
+          role: 'user',
+          content: promptParts.join('\n')
+        }
+      ]
+    })
+  });
+  
+  if (!response.ok) {
+    throw new Error(`Error from Anthropic API: ${response.status}`);
+  }
+  
+  const result = await response.json();
+  const claudeResponse = result.content[0].text;
+  
+  // Extract CSS rules
+  const cssMatch = claudeResponse.match(/```css\s*([\s\S]*?)\s*```/);
+  let cssRules = cssMatch ? cssMatch[1].trim() : null;
+  
+  // Sanitize CSS rules to remove any invalid selectors that might cause errors
+  if (cssRules) {
+    // Replace any possible utility class usage in selectors
+    cssRules = cssRules.replace(/:[a-z]+-[0-9]+/g, ''); // Remove things like :p-8, :text-lg
+    
+    // Make sure selector doesn't use classes that look like utilities
+    const potentialUtilityClasses = [/\.[mp][trblxy]?-\d+/, /\.text-\w+/, /\.bg-\w+/, /\.flex-\w+/];
+    potentialUtilityClasses.forEach(pattern => {
+      cssRules = cssRules.replace(pattern, '');
+    });
+  }
+  
+  // Extract HTML example
+  const htmlMatch = claudeResponse.match(/```html\s*([\s\S]*?)\s*```/);
+  const htmlExample = htmlMatch ? htmlMatch[1].trim() : null;
+  
+  console.log(`Extracted CSS rules: ${cssRules ? 'Yes' : 'No'}`);
+  console.log(`Extracted HTML example: ${htmlExample ? 'Yes' : 'No'}`);
+  
+  // Apply the changes to all matching elements
+  if (cssRules) {
+    // Add the CSS to the head
+    const styleTag = `<style>${cssRules}</style>`;
+    const headTag = $('head');
+    if (headTag.length > 0) {
+      headTag.append(styleTag);
+    } else {
+      $('html').prepend(`<head>${styleTag}</head>`);
+    }
+  }
+  
+  // If HTML changes are needed, use the example to guide individual element updates
+  if (htmlExample) {
+    try {
+      const $example = cheerio.load(htmlExample);
+      const exampleEl = $example.root().children().first();
+      
+      // Apply similar changes to all matching elements
+      selectors.forEach(selector => {
+        try {
+          $(selector).each((i, el) => {
+            const $el = $(el);
+            
+            // Transfer attributes from example
+            const exampleAttrs = exampleEl[0].attribs;
+            for (const attr in exampleAttrs) {
+              if (attr !== 'id') { // Don't override IDs
+                $el.attr(attr, exampleAttrs[attr]);
+              }
+            }
+            
+            // If the instruction mentions changing text and the example has different text
+            if (instruction.includes('text') && exampleEl.text() !== $el.text()) {
+              // Only apply text changes for instruction about text
+              if (instruction.includes('text') || instruction.includes('content')) {
+                $el.text(exampleEl.text());
+              }
+            }
+          });
+        } catch (error) {
+          console.warn(`Error applying changes to selector "${selector}": ${error.message}`);
+        }
+      });
+    } catch (error) {
+      console.error(`Error processing HTML example: ${error.message}`);
+    }
+  }
+  
+  // Return the updated HTML
+  return $.html();
+}
+
+// Add a new comprehensive HTML transformer that handles any HTML transformation with Claude
+async function transformHtmlWithClaude(html, instruction, transformationType = 'auto') {
+  console.log(`🔄 Transforming HTML with Claude - Type: ${transformationType}, Instruction: "${instruction}"`);
+  
+  // Get Anthropic API key
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (!anthropicKey) {
+    throw new Error("Missing ANTHROPIC_API_KEY environment variable");
+  }
+  
+  // Determine the transformation type if set to auto
+  if (transformationType === 'auto') {
+    // Check for full page redesign patterns
+    const fullPagePatterns = [
+      /redesign (the )?full page/i,
+      /redesign (the )?entire page/i,
+      /redesign (the )?whole page/i,
+      /change (the )?layout of/i,
+      /completely redesign/i,
+      /overhaul the/i,
+      /redo the (entire|whole)/i
+    ];
+    
+    for (const pattern of fullPagePatterns) {
+      if (pattern.test(instruction)) {
+        transformationType = 'full-page';
+        break;
+      }
+    }
+    
+    // Check for batch operations with "all" pattern
+    if (transformationType === 'auto') {
+      const allPattern = /\b(all|every)\s+(\w+)s?\b/i;
+      if (allPattern.test(instruction)) {
+        transformationType = 'batch-elements';
+      }
+    }
+    
+    // Default to single element if not determined
+    if (transformationType === 'auto') {
+      transformationType = 'single-element';
+    }
+  }
+  
+  console.log(`Determined transformation type: ${transformationType}`);
+  
+  // Build appropriate prompt based on transformation type
+  let promptParts = [];
+  let systemPrompt = "";
+  
+  if (transformationType === 'full-page') {
+    // Full page redesign prompt
+    promptParts = [
+      `You are an expert web designer and developer redesigning an entire HTML page based on this instruction: "${instruction}"`,
+      ``,
+      `Current HTML page:`,
+      `\`\`\`html`,
+      html,
+      `\`\`\``,
+      ``,
+      `EXTREMELY IMPORTANT RULES:`,
+      `1. Return ONLY valid HTML with NO explanations or markdown - just the raw HTML document`,
+      `2. Preserve all functionality, IDs, form handlers, and script tags`,
+      `3. Maintain all original content and text unless specifically instructed to change it`,
+      `4. Start with <!DOCTYPE html> and end with </html>`,
+      `5. Use proper CSS syntax - no utility class names in selectors (no :p-8 or similar)`,
+      `6. Make sure all original attributes are preserved unless they need to be changed`,
+      `7. DO NOT add any commentary or explanation before or after the HTML`
+    ];
+    
+    systemPrompt = "You are a web design AI that returns only complete, valid HTML documents. Never include explanations, markdown formatting, or commentary with your response. Your output should be a complete HTML document that starts with <!DOCTYPE html> and contains all necessary elements.";
+  } 
+  else if (transformationType === 'batch-elements') {
+    // Extract the element type from the instruction
+    const allPattern = /\b(all|every)\s+(\w+)s?\b/i;
+    const allMatch = instruction.match(allPattern);
+    const elementType = allMatch ? allMatch[2].toLowerCase() : 'elements';
+    
+    // Map common element types to their selectors
+    const elementMappings = {
+      'button': 'button, .btn, .button, a[role="button"], input[type="button"], input[type="submit"]',
+      'link': 'a',
+      'input': 'input',
+      'image': 'img',
+      'heading': 'h1, h2, h3, h4, h5, h6',
+      'paragraph': 'p',
+      'header': 'header',
+      'footer': 'footer',
+      'section': 'section',
+      'card': '.card, .box, .panel',
+      'icon': 'i, .icon, svg',
+      'menu': 'nav, .menu, .navbar',
+      'field': 'input, textarea, select',
+      'form': 'form'
+    };
+    
+    // Create selector
+    const selector = elementMappings[elementType] || elementType;
+    
+    // Load the HTML with cheerio
+    const $ = cheerio.load(html);
+    
+    // Find all matching elements
+    const matchingElements = [];
+    try {
+      $(selector).each((i, el) => {
+        if (matchingElements.length < 5) { // Limit to 5 examples
+          matchingElements.push($.html(el));
+        }
+      });
+    } catch (error) {
+      console.warn(`Error with selector "${selector}": ${error.message}`);
+    }
+    
+    // Build prompt with examples of the elements
+    promptParts = [
+      `You are an expert web designer modifying multiple HTML elements. You need to update all ${elementType} elements based on this instruction: "${instruction}"`,
+      ``,
+      `Here are examples of the elements to modify:`,
+    ];
+    
+    matchingElements.forEach((element, i) => {
+      promptParts.push(`Example ${i+1}:`);
+      promptParts.push('```html');
+      promptParts.push(element);
+      promptParts.push('```');
+    });
+    
+    promptParts.push(``);
+    promptParts.push(`INSTRUCTIONS:`);
+    promptParts.push(`1. Provide a complete <style> tag with CSS rules to apply to all ${elementType} elements`);
+    promptParts.push(`2. Also provide ONE complete HTML example of how these elements should be modified`);
+    promptParts.push(`3. Use standard CSS syntax - no utility classes as selectors`);
+    promptParts.push(`4. Return ONLY the <style> tag and ONE modified element example with no explanations`);
+    promptParts.push(`5. Format your response exactly like this:`);
+    promptParts.push(`<style>`);
+    promptParts.push(`/* Your CSS here */`);
+    promptParts.push(`</style>`);
+    promptParts.push(``);
+    promptParts.push(`<!-- Modified element example -->`);
+    promptParts.push(`<element>Your modified element here</element>`);
+    
+    systemPrompt = "You are a CSS and HTML expert. Respond with only the requested <style> tag and HTML example with no explanations or markdown. Use standard CSS properties and valid syntax.";
+  } 
+  else {
+    // Single element transformation prompt
+    promptParts = [
+      `You are an expert web designer modifying an HTML element based on this instruction: "${instruction}"`,
+      ``,
+      `Current HTML element:`,
+      `\`\`\`html`,
+      html,
+      `\`\`\``,
+      ``,
+      `IMPORTANT RULES:`,
+      `1. Return ONLY the modified HTML element with NO explanations or markdown`,
+      `2. Preserve all functionality (IDs, classes, event handlers, attributes)`,
+      `3. Only modify what's needed to fulfill the instruction`,
+      `4. Start your response with the opening HTML tag and end with closing tag`,
+      `5. Use proper CSS syntax for any style changes`,
+      `6. DO NOT add any commentary or explanation`
+    ];
+    
+    systemPrompt = "You are a web design AI that returns only the modified HTML element. Never include explanations, markdown formatting, or commentary. Your output should be only the requested HTML element code.";
+  }
+  
+  try {
+    // Call Claude API
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': anthropicKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-3-7-sonnet-20250219',
+        max_tokens: transformationType === 'full-page' ? 4000 : 2000,
+        temperature: 0.2,
+        system: systemPrompt,
+        messages: [
+          {
+            role: 'user',
+            content: promptParts.join('\n')
+          }
+        ]
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Error from Anthropic API: ${response.status}`);
+    }
+    
+    const result = await response.json();
+    let modifiedHtml = result.content[0].text.trim();
+    
+    // Clean up Claude's response
+    modifiedHtml = modifiedHtml
+      .replace(/```(?:html|css)?\s*([\s\S]*?)\s*```/g, '$1')
+      .trim();
+    
+    // Basic validation based on transformation type
+    if (transformationType === 'full-page' && 
+        !modifiedHtml.includes('<!DOCTYPE html>') && 
+        !modifiedHtml.startsWith('<html') && 
+        !modifiedHtml.startsWith('<head')) {
+      console.warn("Claude's response doesn't look like a full HTML page:", modifiedHtml.substring(0, 100));
+      throw new Error("Invalid full page HTML response from Claude");
+    }
+    
+    if (transformationType === 'single-element' && !modifiedHtml.startsWith('<')) {
+      console.warn("Claude's response doesn't look like an HTML element:", modifiedHtml.substring(0, 100));
+      
+      // Try to extract HTML from response if present
+      const htmlMatch = modifiedHtml.match(/<[^>]+>[\s\S]*<\/[^>]+>/);
+      if (htmlMatch) {
+        modifiedHtml = htmlMatch[0];
+      } else {
+        throw new Error("Invalid HTML element response from Claude");
+      }
+    }
+    
+    console.log(`✅ Successfully transformed HTML (${modifiedHtml.length} chars)`);
+    return modifiedHtml;
+    
+  } catch (error) {
+    console.error(`❌ Error transforming HTML with Claude:`, error);
+    throw error;
+  }
+}
+
+// Add a new function to apply CSS and HTML changes from Claude to multiple elements
+async function applyBatchChanges(html, instruction) {
+  try {
+    console.log(`🔄 Applying batch changes based on: "${instruction}"`);
+    
+    // Get the transformation result from Claude
+    const transformResult = await transformHtmlWithClaude(html, instruction, 'batch-elements');
+    
+    // Extract the style tag
+    const styleMatch = transformResult.match(/<style>([\s\S]*?)<\/style>/);
+    const cssRules = styleMatch ? styleMatch[1] : null;
+    
+    // Extract the example element
+    const elementMatch = transformResult.match(/<!--[\s\S]*?-->\s*(<[\s\S]*>)/);
+    const elementExample = elementMatch ? elementMatch[1] : null;
+    
+    if (!cssRules && !elementExample) {
+      throw new Error("Claude did not return valid CSS or HTML example");
+    }
+    
+    // Parse the instruction to identify target elements
+    const advancedSelectors = parseAdvancedSelectors(instruction);
+    
+    // Load the HTML with cheerio
+    const $ = cheerio.load(html);
+    
+    // Add CSS rules if present
+    if (cssRules) {
+      console.log(`Adding CSS rules to the document`);
+      const styleTag = `<style>${cssRules}</style>`;
+      
+      // Add to head if it exists, otherwise create one
+      const headTag = $('head');
+      if (headTag.length > 0) {
+        headTag.append(styleTag);
+      } else {
+        $('html').prepend(`<head>${styleTag}</head>`);
+      }
+    }
+    
+    // Apply HTML changes from the example if present
+    if (elementExample) {
+      console.log(`Applying HTML changes from example to matching elements`);
+      
+      // Parse the example
+      const $example = cheerio.load(elementExample);
+      const exampleEl = $example.root().children().first();
+      
+      // Apply to all matching elements
+      advancedSelectors.selectors.forEach(selector => {
+        try {
+          console.log(`Applying changes to elements matching: ${selector}`);
+          let updateCount = 0;
+          
+          $(selector).each((i, el) => {
+            const $el = $(el);
+            
+            // Transfer attributes from example
+            const exampleAttrs = exampleEl[0].attribs || {};
+            for (const attr in exampleAttrs) {
+              if (attr !== 'id') { // Don't override IDs
+                $el.attr(attr, exampleAttrs[attr]);
+              }
+            }
+            
+            // If the instruction mentions text or content, update the text
+            if ((instruction.includes('text') || instruction.includes('content')) && 
+                exampleEl.text() !== $el.text()) {
+              $el.html(exampleEl.html());
+            }
+            
+            updateCount++;
+          });
+          
+          console.log(`Updated ${updateCount} elements matching selector: ${selector}`);
+        } catch (error) {
+          console.warn(`Error applying changes to selector "${selector}": ${error.message}`);
+        }
+      });
+    }
+    
+    return $.html();
+  } catch (error) {
+    console.error(`Error applying batch changes:`, error);
+    throw error;
+  }
+}
+
+// Replace the existing intelligentHtmlUpdate function with a new implementation using the transformer
 export const intelligentHtmlUpdate = async (file, instruction) => {
   console.log(`🧠 Intelligent HTML Update - File: ${file}, Instruction: "${instruction}"`);
   
@@ -1004,461 +1617,23 @@ export const intelligentHtmlUpdate = async (file, instruction) => {
     const content = await fs.readFile(filePath, 'utf-8');
     console.log(`📄 Read file content (${content.length} chars)`);
     
-    // Parse instruction to extract target element information
-    const { targetElement, targetAction } = parseInstruction(instruction);
-    console.log(`🔍 Parsed instruction: ${JSON.stringify({ targetElement, targetAction })}`);
-    
-    // Check if this is a specific element update or a general natural language command
-    const isNaturalLanguageCommand = 
-      targetAction.type === 'redesign' || 
-      instruction.includes('make it') || 
-      instruction.toLowerCase().includes('change') || 
-      !targetElement.text;
-    
-    if (isNaturalLanguageCommand) {
-      console.log(`🌟 Processing as natural language command`);
-      
-      try {
-        // Build a context-aware prompt
-        const contextPrompt = await buildContextPrompt(file, instruction);
-        
-        // Get Anthropic API key
-        const anthropicKey = process.env.ANTHROPIC_API_KEY;
-        if (!anthropicKey) {
-          throw new Error("Missing ANTHROPIC_API_KEY environment variable");
-        }
-        
-        // Call Claude with the context-rich prompt
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': anthropicKey,
-            'anthropic-version': '2023-06-01'
-          },
-          body: JSON.stringify({
-            model: 'claude-3-7-sonnet-20250219',
-            max_tokens: 2000,
-            temperature: 0.2,
-            messages: [
-              {
-                role: 'user',
-                content: contextPrompt
-              }
-            ]
-          })
-        });
-        
-        if (!response.ok) {
-          throw new Error(`Error from Anthropic API: ${response.status}`);
-        }
-        
-        const result = await response.json();
-        const modifiedHtml = result.content[0].text.trim();
-        
-        // Clean up the response (remove markdown and any explanations)
-        const cleanHtml = modifiedHtml
-          .replace(/```(?:html)?\s*([\s\S]*?)\s*```/g, '$1')
-          .trim();
-        
-        console.log(`✅ Received modified HTML from Claude`);
-        
-        // Load the full document
-        const $ = cheerio.load(content);
-        
-        // Create a temporary DOM to parse the modified HTML
-        const $modified = cheerio.load(`<div id="claude-output">${cleanHtml}</div>`);
-        
-        // Extract the element(s) from Claude's response
-        const $elementFromClaude = $modified('#claude-output').children();
-        
-        if ($elementFromClaude.length === 0) {
-          throw new Error("Claude did not return any valid HTML elements");
-        }
-        
-        console.log(`Found ${$elementFromClaude.length} elements in Claude's response`);
-        
-        // Try to identify where to insert each element in the original document
-        let updatedContent = content;
-        let updateCount = 0;
-        
-        $elementFromClaude.each((i, el) => {
-          const $el = $modified(el);
-          const tagName = el.tagName;
-          const id = $el.attr('id');
-          const className = $el.attr('class');
-          const text = $el.text().trim();
-          
-          console.log(`Looking for matching element: ${tagName}${id ? `#${id}` : ''}${className ? `.${className}` : ''} with text "${text.substring(0, 30)}..."`);
-          
-          // Try various ways to find the matching element in the original document
-          let $matchingElements = [];
-          
-          // 1. Try by ID if available (most specific)
-          if (id) {
-            $matchingElements = $(`#${id}`);
-          }
-          
-          // 2. Try by tag and class combination
-          if ($matchingElements.length === 0 && className) {
-            $matchingElements = $(`${tagName}.${className.replace(/\s+/g, '.')}`);
-          }
-          
-          // 3. Try by text content for buttons and links
-          if ($matchingElements.length === 0 && text && ['button', 'a'].includes(tagName.toLowerCase())) {
-            $matchingElements = $(tagName).filter(function() {
-              return $(this).text().trim() === text;
-            });
-          }
-          
-          // 4. Try partial text matching as last resort
-          if ($matchingElements.length === 0 && text && text.length > 10) {
-            const textPattern = text.substring(0, 10).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            $matchingElements = $('*').filter(function() {
-              return $(this).text().includes(text.substring(0, 10));
-            });
-          }
-          
-          // If we found matching elements, replace the first one
-          if ($matchingElements.length > 0) {
-            console.log(`✅ Found ${$matchingElements.length} matching elements in the original document`);
-            
-            // Get the HTML of the original element and the replacement
-            const originalHtml = $.html($matchingElements.first());
-            const replacementHtml = $modified.html($el);
-            
-            // Replace in the document
-            updatedContent = updatedContent.replace(originalHtml, replacementHtml);
-            updateCount++;
-          } else {
-            console.warn(`⚠️ Could not find a matching element for ${tagName} in the original document`);
-          }
-        });
-        
-        if (updateCount === 0) {
-          throw new Error("Could not find any matching elements to update");
-        }
-        
-        // Write the updated content back to the file
-        await fs.writeFile(filePath, updatedContent, 'utf-8');
-        
-        // Restart the server
-        await restartServer(baseDir);
-        
-        return { 
-          success: true, 
-          message: `Successfully applied natural language update to ${file}: "${instruction}"`,
-          serverUrl: `http://localhost:3030/scraped_website/`,
-          update: {
-            elementCount: updateCount,
-            instruction: instruction
-          }
-        };
-        
-      } catch (error) {
-        console.error(`❌ Error with natural language update:`, error);
-        // Fall back to the existing implementation
-        console.log(`⚠️ Falling back to standard element targeting`);
-      }
-    }
-    
-    // Continue with the existing implementation for specific element updates
-    const $ = cheerio.load(content);
-    
-    // Find the target element - enhanced targeting approach
-    let $targetElement;
-    let allCandidates = [];
-    
-    // Log what we're looking for
-    console.log(`Looking for ${targetElement.type} with text: "${targetElement.text}"`);
-    
-    // Try different search strategies with increasing flexibility
-    // 1. First try: exact button match
-    if (targetElement.type === 'button') {
-      $targetElement = $('button').filter(function() {
-        const buttonText = $(this).text().trim();
-        return buttonText === targetElement.text.trim();
-      });
-      
-      if ($targetElement.length > 0) {
-        console.log(`Found exact button match with text: "${targetElement.text}"`);
-      }
-    }
-    
-    // 2. Second try: contains match for buttons
-    if (!$targetElement || $targetElement.length === 0) {
-      $targetElement = $('button').filter(function() {
-        return $(this).text().toLowerCase().includes(targetElement.text.toLowerCase());
-      });
-      
-      if ($targetElement.length > 0) {
-        console.log(`Found button containing text: "${targetElement.text}"`);
-      }
-    }
-    
-    // 3. Third try: button-like elements
-    if (!$targetElement || $targetElement.length === 0) {
-      $targetElement = $('a, div, span').filter(function() {
-        // Check if this element likely represents a button
-        const classes = $(this).attr('class') || '';
-        const hasButtonClass = classes.toLowerCase().includes('button') || 
-                               classes.toLowerCase().includes('btn');
-        const hasButtonStyles = $(this).css('cursor') === 'pointer' || 
-                               $(this).css('padding') !== undefined;
-        const isClickable = $(this).attr('onclick') !== undefined || 
-                           $(this).attr('href') !== undefined;
-        
-        // Check if the text closely matches
-        const elementText = $(this).text().trim().toLowerCase();
-        const targetText = targetElement.text.trim().toLowerCase();
-        const textMatches = elementText.includes(targetText) || 
-                           targetText.includes(elementText);
-        
-        return textMatches && (hasButtonClass || hasButtonStyles || isClickable);
-      });
-      
-      if ($targetElement.length > 0) {
-        console.log(`Found button-like element with text: "${targetElement.text}"`);
-      }
-    }
-    
-    // 4. Fourth try: generic text-containing elements
-    if (!$targetElement || $targetElement.length === 0) {
-      $targetElement = $('*').filter(function() {
-        if ($(this).is('html, body, head, script, style')) {
-          return false;
-        }
-        
-        const elementText = $(this).text().trim().toLowerCase();
-        const targetText = targetElement.text.trim().toLowerCase();
-        
-        // Only match if this element itself contains the text directly (not just its children)
-        const childrenText = $(this).children().text().trim().toLowerCase();
-        const hasTextDirectly = elementText.includes(targetText) && 
-                               (elementText.length - childrenText.length > 0);
-        
-        return hasTextDirectly;
-      });
-      
-      if ($targetElement.length > 0) {
-        console.log(`Found generic element containing text: "${targetElement.text}"`);
-      }
-    }
-    
-    // If no elements found, fall back to LLM-based approach
-    if (!$targetElement || $targetElement.length === 0) {
-      console.log(`⚠️ No exact element match found, falling back to LLM-based approach`);
-      
-      try {
-        // Use the existing LLM-based approach
-        const snippetInfo = await findHtmlSnippet(content, instruction);
-        const updatedSnippet = await updateHtmlSnippet(snippetInfo.snippet, instruction);
-        
-        // Create a regex to find the exact snippet
-        const escapedSnippet = snippetInfo.snippet.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const snippetRegex = new RegExp(escapedSnippet, 'g');
-        
-        // Replace the snippet in the original HTML
-        const modifiedContent = content.replace(snippetRegex, updatedSnippet);
-        
-        // Check if any change was made
-        if (modifiedContent === content) {
-          console.warn("⚠️ Regex replacement didn't work, falling back to approximate line replacement");
-          
-          // Fallback approach: use the approximate line numbers
-          const lines = content.split('\n');
-          const lineStart = Math.max(0, snippetInfo.lineStart - 1); // 0-indexed
-          const lineEnd = Math.min(lines.length, snippetInfo.lineEnd);
-          
-          // Replace the relevant lines
-          const beforeLines = lines.slice(0, lineStart);
-          const afterLines = lines.slice(lineEnd);
-          
-          // Construct the new content
-          const newContent = [...beforeLines, updatedSnippet, ...afterLines].join('\n');
-          
-          // Write the modified content back to the file
-          await fs.writeFile(filePath, newContent, 'utf-8');
-        } else {
-          // Write the modified content back to the file
-          await fs.writeFile(filePath, modifiedContent, 'utf-8');
-        }
-        
-        // Restart the server
-        await restartServer(baseDir);
-        
-        return { 
-          success: true, 
-          message: `Successfully updated ${file} based on instruction: "${instruction}"`,
-          serverUrl: `http://localhost:3030/scraped_website/`,
-          update: {
-            elementType: snippetInfo.elementType,
-            identifier: snippetInfo.elementIdentifier,
-            change: snippetInfo.modificationNeeded
-          }
-        };
-      } catch (error) {
-        console.error(`❌ Error with fallback approach:`, error);
-        return { 
-          success: false, 
-          message: `Failed to find matching element for: "${instruction}"` 
-        };
-      }
-    }
-    
-    // If we found multiple matches, use the first one but log a warning
-    if ($targetElement.length > 1) {
-      console.warn(`⚠️ Found ${$targetElement.length} matching elements, using the first one`);
-      // Keep only the first match
-      $targetElement = $targetElement.first();
-    }
-    
-    console.log(`✅ Found matching element: ${$targetElement.length > 0}`);
-    
-    // Store original HTML for comparison
-    const originalHtml = $.html();
-    const originalElementHtml = $.html($targetElement);
-    console.log(`Original element HTML: ${originalElementHtml.substring(0, 100)}...`);
-    
-    // NEW: Use Claude to design the element change
-    let modifiedElementHtml;
-    try {
-      // Send the original element to Claude for design modification
-      modifiedElementHtml = await designElementChange(originalElementHtml, instruction);
-    } catch (claudeError) {
-      console.warn(`⚠️ Claude design failed, falling back to basic modifications: ${claudeError.message}`);
-      
-      // Apply the requested changes using Cheerio as fallback
-      if (targetAction.type === 'color' || targetAction.type === 'colour') {
-        if (targetAction.property === 'background-color' || targetAction.property === 'bg') {
-          $targetElement.css('background-color', targetAction.value);
-        } else {
-          $targetElement.css('color', targetAction.value);
-        }
-      } else if (targetAction.type === 'style') {
-        $targetElement.css(targetAction.property, targetAction.value);
-      } else if (targetAction.type === 'text') {
-        $targetElement.text(targetAction.value);
-      } else if (targetAction.type === 'class') {
-        if (targetAction.operation === 'add') {
-          $targetElement.addClass(targetAction.value);
-        } else if (targetAction.operation === 'remove') {
-          $targetElement.removeClass(targetAction.value);
-        }
-      } else if (targetAction.type === 'attribute') {
-        $targetElement.attr(targetAction.property, targetAction.value);
-      }
-      
-      // Get the modified HTML
-      modifiedElementHtml = $.html($targetElement);
-    }
-    
-    console.log(`Modified element HTML: ${modifiedElementHtml.substring(0, 100)}...`);
-    
-    // Improved element replacement approach
-    
-    // 1. First try direct string replacement
-    let updatedContent = content.replace(originalElementHtml, modifiedElementHtml);
-    
-    // 2. If direct replacement failed, try DOM replacement
-    if (updatedContent === content) {
-      console.log("Direct string replacement failed, trying DOM replacement");
-      
-      // Create a new DOM with the content
-      const $dom = cheerio.load(content);
-      
-      // Find the element in the new DOM
-      let $elementToReplace;
-      
-      // Try to find by similar text content
-      const targetText = targetElement.text.trim();
-      $elementToReplace = $dom(`*:contains("${targetText}")`).filter(function() {
-        // Skip html, body, etc.
-        if ($dom(this).is('html, body, head, script, style')) {
-          return false;
-        }
-        
-        // Check if text content matches
-        const text = $dom(this).text().trim();
-        return text.includes(targetText) || targetText.includes(text);
-      });
-      
-      if ($elementToReplace.length > 1) {
-        console.log(`Found ${$elementToReplace.length} potential elements to replace, narrowing down`);
-        
-        // Try to narrow down by element type
-        const tagName = $targetElement.prop('tagName').toLowerCase();
-        const narrowed = $elementToReplace.filter(function() {
-          return $dom(this).prop('tagName').toLowerCase() === tagName;
-        });
-        
-        if (narrowed.length > 0) {
-          $elementToReplace = narrowed.first();
-        } else {
-          $elementToReplace = $elementToReplace.first();
-        }
-      } else if ($elementToReplace.length === 0) {
-        console.warn("Could not find element to replace in the DOM");
-        
-        // 3. If DOM replacement failed, try using serialized HTML search
-        // Look for a unique snippet of the original element
-        const snippets = [];
-        if (originalElementHtml.length > 30) {
-          // Extract a few unique-looking snippets from the original element
-          snippets.push(originalElementHtml.substring(0, 30));
-          snippets.push(originalElementHtml.substring(Math.floor(originalElementHtml.length / 2), 
-                                               Math.floor(originalElementHtml.length / 2) + 30));
-          
-          // Try to replace each snippet
-          let replacementSucceeded = false;
-          for (const snippet of snippets) {
-            if (content.includes(snippet)) {
-              const escapedSnippet = snippet.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-              const regexPattern = new RegExp(`[\\s\\S]*?(${escapedSnippet}[\\s\\S]*?)(?=<\\/${$targetElement.prop('tagName').toLowerCase()}>)`, 'i');
-              const match = content.match(regexPattern);
-              
-              if (match && match[1]) {
-                const fullMatch = match[1] + `</${$targetElement.prop('tagName').toLowerCase()}>`;
-                updatedContent = content.replace(fullMatch, modifiedElementHtml);
-                if (updatedContent !== content) {
-                  console.log("Successfully replaced element using snippet match");
-                  replacementSucceeded = true;
-                  break;
-                }
-              }
-            }
-          }
-          
-          if (!replacementSucceeded) {
-            console.error("All replacement attempts failed");
-            return {
-              success: false,
-              message: "Could not reliably update the element in the document"
-            };
-          }
-        }
-      } else {
-        // Replace the found element with the modified version
-        console.log("Replacing element in DOM");
-        $elementToReplace.replaceWith(modifiedElementHtml);
-        updatedContent = $dom.html();
-      }
-    }
+    // Use the new HTML transformer to transform the HTML
+    // The transformer will automatically detect the type of transformation needed
+    const transformedHtml = await transformHtml(content, instruction);
     
     // Write the updated content back to the file
-    await fs.writeFile(filePath, updatedContent, 'utf-8');
+    await fs.writeFile(filePath, transformedHtml, 'utf-8');
     
     // Restart the server
     await restartServer(baseDir);
     
     return { 
       success: true, 
-      message: `Successfully updated ${targetElement.type || 'element'} with text "${targetElement.text}" in ${file} using Claude design`,
+      message: `Successfully updated ${file} based on instruction: "${instruction}"`,
       serverUrl: `http://localhost:3030/scraped_website/`,
       update: {
-        elementType: targetElement.type || 'element',
-        identifier: targetElement.text,
-        change: `Claude-designed update based on: "${instruction}"`
+        type: 'claude-html-transform',
+        instruction: instruction
       }
     };
     
