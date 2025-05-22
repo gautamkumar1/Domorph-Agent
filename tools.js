@@ -638,7 +638,339 @@ Modified snippet:`;
   }
 }
 
-// Enhanced intelligentHtmlUpdate function using Cheerio
+// New function to design element changes using Claude
+async function designElementChange(originalElement, instruction) {
+  console.log(`🎨 Designing element change using Claude - Instruction: "${instruction}"`);
+  console.log(`Original element: ${originalElement.substring(0, 100)}...`);
+  
+  // Get Anthropic API key from environment
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (!anthropicKey) {
+    console.error("❌ Missing ANTHROPIC_API_KEY environment variable");
+    throw new Error("Missing API key configuration");
+  }
+  
+  // Extract the operation type from the instruction for better prompting
+  const isColorChange = instruction.match(/(?:colou?r|background|bg)\s+(?:to\s+)?(\w+)/i);
+  const isRedesign = instruction.match(/redesign|make\s+(?:it|this)\s+(?:more|better|nicer)/i);
+  
+  // Create a more specific prompt based on instruction type
+  let promptContent;
+  
+  if (isColorChange) {
+    // For color changes, be very specific
+    promptContent = `
+You are an expert web designer and HTML/CSS specialist. Your task is to modify an HTML element's color based on the user instruction.
+
+ORIGINAL HTML ELEMENT:
+\`\`\`html
+${originalElement}
+\`\`\`
+
+USER INSTRUCTION: "${instruction}"
+
+Your task:
+1. ONLY modify the color properties specified in the instruction (text color or background color)
+2. DO NOT add any new elements or remove existing ones
+3. Preserve ALL existing classes, IDs, and other attributes
+4. Return ONLY the modified HTML element
+
+Rules for color changes:
+- If the instruction mentions "background color" or "bg color", modify the background-color CSS property
+- If the instruction just mentions "color", modify the color (text color) CSS property
+- Add the color either as an inline style or by adding/modifying a class as appropriate
+- Use the exact color specified in the instruction
+
+Modified HTML element:`;
+  } else if (isRedesign) {
+    // For redesign requests, emphasize modifying not adding
+    promptContent = `
+You are an expert web designer and HTML/CSS specialist. Your task is to redesign an existing HTML element based on the user instruction.
+
+ORIGINAL HTML ELEMENT:
+\`\`\`html
+${originalElement}
+\`\`\`
+
+USER INSTRUCTION: "${instruction}"
+
+Your task:
+1. MODIFY the EXISTING element - DO NOT create or add new elements
+2. Preserve the element type, ID, and essential attributes
+3. You can add or modify classes and styles to improve the design
+4. You can modify the element's content if requested, but keep the same basic content
+5. Ensure the element's functionality is maintained
+6. Return ONLY the modified HTML element
+
+Example of acceptable changes:
+- Adding inline styles
+- Modifying existing style attributes
+- Adding CSS classes for styling
+- Tweaking the element structure while keeping its core functionality
+- Adjusting padding, margins, borders, etc.
+
+Example of unacceptable changes:
+- Adding completely new elements
+- Changing a button to a div or another element type
+- Removing important attributes like onclick handlers
+- Completely changing the element's content unless specifically requested
+
+Modified HTML element:`;
+  } else {
+    // Generic prompt for other types of changes
+    promptContent = `
+You are an expert web designer and HTML/CSS specialist. Your task is to modify an HTML element based on a user instruction.
+
+ORIGINAL HTML ELEMENT:
+\`\`\`html
+${originalElement}
+\`\`\`
+
+USER INSTRUCTION: "${instruction}"
+
+Your task:
+1. Apply ONLY the requested changes to this HTML element
+2. DO NOT add new elements - modify the existing one
+3. Maintain all existing classes, IDs, and attributes except what needs to be changed
+4. Follow modern web design principles
+5. Ensure the element remains functional
+6. Return ONLY the modified HTML element with no explanation
+
+Modified HTML element:`;
+  }
+  
+  try {
+    // Send request to Claude
+    console.log(`🤖 Sending request to Anthropic API to design element change...`);
+    
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': anthropicKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-3-7-sonnet-20250219',
+        max_tokens: 1000,
+        temperature: 0.2,
+        messages: [
+          {
+            role: 'user',
+            content: promptContent
+          }
+        ]
+      })
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`❌ Anthropic API error: ${response.status}`, errorText);
+      throw new Error(`Error from Anthropic API: ${response.status}`);
+    }
+    
+    const result = await response.json();
+    const modifiedElement = result.content[0].text.trim();
+    
+    // Remove any markdown code block formatting if present
+    const cleanElement = modifiedElement.replace(/```(?:html)?\s*([\s\S]*?)\s*```/g, '$1').trim();
+    
+    console.log(`✅ Successfully designed element change`);
+    console.log(`Modified element: ${cleanElement.substring(0, 100)}...`);
+    
+    return cleanElement;
+  } catch (error) {
+    console.error(`❌ Error designing element change:`, error);
+    throw error;
+  }
+}
+
+// Add a new function to chunk HTML files intelligently
+async function chunkHtmlForContext(html, instruction) {
+  console.log(`🧩 Breaking HTML into semantic chunks for context`);
+  
+  // Use cheerio to parse the HTML
+  const $ = cheerio.load(html);
+  
+  // Extract key sections based on semantic structure
+  const chunks = [];
+  
+  // 1. Extract the head section (always important for styles/metadata)
+  const headSection = $('head').html();
+  if (headSection) {
+    chunks.push({
+      name: 'head',
+      content: `<head>${headSection}</head>`,
+      importance: 3 // Medium importance
+    });
+  }
+  
+  // 2. Extract main navigation
+  const navElements = $('nav, header, .navbar, [role="navigation"]');
+  if (navElements.length > 0) {
+    navElements.each((i, el) => {
+      chunks.push({
+        name: `navigation-${i}`,
+        content: $.html(el),
+        importance: 3 // Medium importance
+      });
+    });
+  }
+  
+  // 3. Extract main content sections
+  const mainSections = $('main, article, section, .content, .container');
+  if (mainSections.length > 0) {
+    mainSections.each((i, el) => {
+      chunks.push({
+        name: `section-${i}`,
+        content: $.html(el),
+        importance: 4 // High importance
+      });
+    });
+  }
+  
+  // 4. Extract individual components
+  const components = $('div, aside, form');
+  components.each((i, el) => {
+    // Only include components that are not too small and have some meaningful content
+    const html = $.html(el);
+    if (html.length > 100 && ($(el).text().trim().length > 20 || $(el).find('button, input, a').length > 0)) {
+      chunks.push({
+        name: `component-${i}`,
+        content: html,
+        importance: 2 // Lower importance
+      });
+    }
+  });
+  
+  // 5. Extract specific elements that might be targets for modification
+  const targetElements = $('button, a.button, .btn, input[type="button"], input[type="submit"]');
+  const buttonChunks = [];
+  targetElements.each((i, el) => {
+    const $el = $(el);
+    const text = $el.text().trim();
+    const html = $.html(el);
+    
+    // Store all buttons but will score them later based on relevance to instruction
+    buttonChunks.push({
+      name: `button-${i}: ${text}`,
+      content: html,
+      text: text,
+      element: el.tagName,
+      importance: 2 // Default importance, will adjust based on relevance
+    });
+  });
+  
+  // 6. Score button chunks based on relevance to instruction
+  if (instruction && buttonChunks.length > 0) {
+    const lowerInstruction = instruction.toLowerCase();
+    
+    buttonChunks.forEach(chunk => {
+      // Check if the button text is mentioned in the instruction
+      if (chunk.text && lowerInstruction.includes(chunk.text.toLowerCase())) {
+        chunk.importance = 5; // Highest importance for exact match
+      } else if (chunk.text) {
+        // Check for partial matches
+        const words = chunk.text.toLowerCase().split(/\s+/);
+        for (const word of words) {
+          if (word.length > 3 && lowerInstruction.includes(word)) {
+            chunk.importance = 4; // High importance for partial match
+            break;
+          }
+        }
+      }
+    });
+    
+    // Add the button chunks to the main chunks array
+    chunks.push(...buttonChunks);
+  }
+  
+  // 7. Sort chunks by importance
+  chunks.sort((a, b) => b.importance - a.importance);
+  
+  // 8. Build context object with metadata
+  const context = {
+    totalChunks: chunks.length,
+    metadata: {
+      title: $('title').text() || 'Untitled',
+      url: $('link[rel="canonical"]').attr('href') || '',
+      pageStructure: mainSections.length > 0 ? 
+        mainSections.map((i, el) => $(el).attr('id') || $(el).attr('class') || `Section ${i}`).get() : 
+        ['No clear sections found']
+    },
+    chunks: chunks
+  };
+  
+  console.log(`✅ Generated ${chunks.length} semantic chunks from HTML`);
+  return context;
+}
+
+// Function to build a prompt with the most relevant context for Claude
+async function buildContextPrompt(file, instruction, maxTokens = 60000) {
+  console.log(`📝 Building context-aware prompt for: "${instruction}"`);
+  
+  try {
+    // Read the HTML file
+    const baseDir = path.join(process.cwd(), "scraped_website");
+    const filePath = path.join(baseDir, file);
+    const content = await fs.readFile(filePath, 'utf-8');
+    
+    // Break the HTML into semantic chunks
+    const context = await chunkHtmlForContext(content, instruction);
+    
+    // Build initial prompt components
+    const promptParts = [
+      `You are an expert web developer analyzing HTML code from the file "${file}".`,
+      `The page title is: "${context.metadata.title}"`,
+      `You are being asked to: "${instruction}"`,
+      "Here are the most relevant parts of the HTML file for this task:"
+    ];
+    
+    // Add chunks until we approach the context limit (rough estimation)
+    let totalLength = promptParts.join('\n').length;
+    let chunkCount = 0;
+    
+    // First, always include the highest importance chunks
+    const highImportanceChunks = context.chunks.filter(chunk => chunk.importance >= 4);
+    for (const chunk of highImportanceChunks) {
+      const chunkText = `\n--- ${chunk.name} ---\n${chunk.content}`;
+      if (totalLength + chunkText.length < maxTokens * 3.5) { // Rough character to token ratio
+        promptParts.push(chunkText);
+        totalLength += chunkText.length;
+        chunkCount++;
+      }
+    }
+    
+    // Then add medium importance chunks
+    const mediumImportanceChunks = context.chunks.filter(chunk => chunk.importance === 3);
+    for (const chunk of mediumImportanceChunks) {
+      const chunkText = `\n--- ${chunk.name} ---\n${chunk.content}`;
+      if (totalLength + chunkText.length < maxTokens * 3.5) {
+        promptParts.push(chunkText);
+        totalLength += chunkText.length;
+        chunkCount++;
+      }
+    }
+    
+    // Add final instructions
+    promptParts.push(
+      `\nYour task:`,
+      `1. Based on the instruction "${instruction}", identify the specific HTML element(s) that need to be modified`,
+      `2. Generate ONLY the modified HTML for the element(s) that need to change`,
+      `3. Preserve all existing classes, IDs, and attributes except what specifically needs to be changed`,
+      `4. Do not add new elements unless explicitly requested, only modify existing ones`,
+      `5. Return ONLY the modified HTML element(s) without any explanation`
+    );
+    
+    console.log(`✅ Built context prompt with ${chunkCount} chunks out of ${context.totalChunks} total chunks`);
+    return promptParts.join('\n');
+  } catch (error) {
+    console.error(`❌ Error building context prompt:`, error);
+    throw error;
+  }
+}
+
+// Enhanced intelligentHtmlUpdate function to use context-aware prompts
 export const intelligentHtmlUpdate = async (file, instruction) => {
   console.log(`🧠 Intelligent HTML Update - File: ${file}, Instruction: "${instruction}"`);
   
@@ -676,59 +1008,245 @@ export const intelligentHtmlUpdate = async (file, instruction) => {
     const { targetElement, targetAction } = parseInstruction(instruction);
     console.log(`🔍 Parsed instruction: ${JSON.stringify({ targetElement, targetAction })}`);
     
-    // Load HTML with Cheerio
+    // Check if this is a specific element update or a general natural language command
+    const isNaturalLanguageCommand = 
+      targetAction.type === 'redesign' || 
+      instruction.includes('make it') || 
+      instruction.toLowerCase().includes('change') || 
+      !targetElement.text;
+    
+    if (isNaturalLanguageCommand) {
+      console.log(`🌟 Processing as natural language command`);
+      
+      try {
+        // Build a context-aware prompt
+        const contextPrompt = await buildContextPrompt(file, instruction);
+        
+        // Get Anthropic API key
+        const anthropicKey = process.env.ANTHROPIC_API_KEY;
+        if (!anthropicKey) {
+          throw new Error("Missing ANTHROPIC_API_KEY environment variable");
+        }
+        
+        // Call Claude with the context-rich prompt
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': anthropicKey,
+            'anthropic-version': '2023-06-01'
+          },
+          body: JSON.stringify({
+            model: 'claude-3-7-sonnet-20250219',
+            max_tokens: 2000,
+            temperature: 0.2,
+            messages: [
+              {
+                role: 'user',
+                content: contextPrompt
+              }
+            ]
+          })
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Error from Anthropic API: ${response.status}`);
+        }
+        
+        const result = await response.json();
+        const modifiedHtml = result.content[0].text.trim();
+        
+        // Clean up the response (remove markdown and any explanations)
+        const cleanHtml = modifiedHtml
+          .replace(/```(?:html)?\s*([\s\S]*?)\s*```/g, '$1')
+          .trim();
+        
+        console.log(`✅ Received modified HTML from Claude`);
+        
+        // Load the full document
+        const $ = cheerio.load(content);
+        
+        // Create a temporary DOM to parse the modified HTML
+        const $modified = cheerio.load(`<div id="claude-output">${cleanHtml}</div>`);
+        
+        // Extract the element(s) from Claude's response
+        const $elementFromClaude = $modified('#claude-output').children();
+        
+        if ($elementFromClaude.length === 0) {
+          throw new Error("Claude did not return any valid HTML elements");
+        }
+        
+        console.log(`Found ${$elementFromClaude.length} elements in Claude's response`);
+        
+        // Try to identify where to insert each element in the original document
+        let updatedContent = content;
+        let updateCount = 0;
+        
+        $elementFromClaude.each((i, el) => {
+          const $el = $modified(el);
+          const tagName = el.tagName;
+          const id = $el.attr('id');
+          const className = $el.attr('class');
+          const text = $el.text().trim();
+          
+          console.log(`Looking for matching element: ${tagName}${id ? `#${id}` : ''}${className ? `.${className}` : ''} with text "${text.substring(0, 30)}..."`);
+          
+          // Try various ways to find the matching element in the original document
+          let $matchingElements = [];
+          
+          // 1. Try by ID if available (most specific)
+          if (id) {
+            $matchingElements = $(`#${id}`);
+          }
+          
+          // 2. Try by tag and class combination
+          if ($matchingElements.length === 0 && className) {
+            $matchingElements = $(`${tagName}.${className.replace(/\s+/g, '.')}`);
+          }
+          
+          // 3. Try by text content for buttons and links
+          if ($matchingElements.length === 0 && text && ['button', 'a'].includes(tagName.toLowerCase())) {
+            $matchingElements = $(tagName).filter(function() {
+              return $(this).text().trim() === text;
+            });
+          }
+          
+          // 4. Try partial text matching as last resort
+          if ($matchingElements.length === 0 && text && text.length > 10) {
+            const textPattern = text.substring(0, 10).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            $matchingElements = $('*').filter(function() {
+              return $(this).text().includes(text.substring(0, 10));
+            });
+          }
+          
+          // If we found matching elements, replace the first one
+          if ($matchingElements.length > 0) {
+            console.log(`✅ Found ${$matchingElements.length} matching elements in the original document`);
+            
+            // Get the HTML of the original element and the replacement
+            const originalHtml = $.html($matchingElements.first());
+            const replacementHtml = $modified.html($el);
+            
+            // Replace in the document
+            updatedContent = updatedContent.replace(originalHtml, replacementHtml);
+            updateCount++;
+          } else {
+            console.warn(`⚠️ Could not find a matching element for ${tagName} in the original document`);
+          }
+        });
+        
+        if (updateCount === 0) {
+          throw new Error("Could not find any matching elements to update");
+        }
+        
+        // Write the updated content back to the file
+        await fs.writeFile(filePath, updatedContent, 'utf-8');
+        
+        // Restart the server
+        await restartServer(baseDir);
+        
+        return { 
+          success: true, 
+          message: `Successfully applied natural language update to ${file}: "${instruction}"`,
+          serverUrl: `http://localhost:3030/scraped_website/`,
+          update: {
+            elementCount: updateCount,
+            instruction: instruction
+          }
+        };
+        
+      } catch (error) {
+        console.error(`❌ Error with natural language update:`, error);
+        // Fall back to the existing implementation
+        console.log(`⚠️ Falling back to standard element targeting`);
+      }
+    }
+    
+    // Continue with the existing implementation for specific element updates
     const $ = cheerio.load(content);
     
-    // Find the target element
-    let targetSelector;
+    // Find the target element - enhanced targeting approach
     let $targetElement;
+    let allCandidates = [];
     
-    // Try to find button/element by exact text match
+    // Log what we're looking for
+    console.log(`Looking for ${targetElement.type} with text: "${targetElement.text}"`);
+    
+    // Try different search strategies with increasing flexibility
+    // 1. First try: exact button match
     if (targetElement.type === 'button') {
-      $targetElement = $(`button:contains("${targetElement.text}")`).filter(function() {
-        return $(this).text().trim() === targetElement.text.trim();
+      $targetElement = $('button').filter(function() {
+        const buttonText = $(this).text().trim();
+        return buttonText === targetElement.text.trim();
       });
       
-      // If exact match failed, try partial match
-      if ($targetElement.length === 0) {
-        $targetElement = $(`button:contains("${targetElement.text}")`);
+      if ($targetElement.length > 0) {
+        console.log(`Found exact button match with text: "${targetElement.text}"`);
       }
-      
-      // Try other elements that might be styled as buttons
-      if ($targetElement.length === 0) {
-        $targetElement = $(`a:contains("${targetElement.text}")`)
-          .add(`div:contains("${targetElement.text}")`)
-          .add(`span:contains("${targetElement.text}")`)
-          .filter(function() {
-            // Check if this element likely represents a button
-            const classes = $(this).attr('class') || '';
-            const hasButtonClass = classes.toLowerCase().includes('button') || 
-                                  classes.toLowerCase().includes('btn');
-            const hasButtonStyles = $(this).css('cursor') === 'pointer' || 
-                                   $(this).css('padding') !== undefined;
-            const isClickable = $(this).attr('onclick') !== undefined || 
-                               $(this).attr('href') !== undefined;
-            
-            // Check if the text closely matches
-            const elementText = $(this).text().trim();
-            const targetText = targetElement.text.trim();
-            const textMatches = elementText.includes(targetText) || 
-                               targetText.includes(elementText);
-            
-            return textMatches && (hasButtonClass || hasButtonStyles || isClickable);
-          });
-      }
-    } else {
-      // Generic element search based on text content
-      $targetElement = $(`*:contains("${targetElement.text}")`).filter(function() {
-        const elementText = $(this).text().trim();
-        return elementText === targetElement.text.trim() && 
-               !$(this).children().text().includes(targetElement.text);
+    }
+    
+    // 2. Second try: contains match for buttons
+    if (!$targetElement || $targetElement.length === 0) {
+      $targetElement = $('button').filter(function() {
+        return $(this).text().toLowerCase().includes(targetElement.text.toLowerCase());
       });
+      
+      if ($targetElement.length > 0) {
+        console.log(`Found button containing text: "${targetElement.text}"`);
+      }
+    }
+    
+    // 3. Third try: button-like elements
+    if (!$targetElement || $targetElement.length === 0) {
+      $targetElement = $('a, div, span').filter(function() {
+        // Check if this element likely represents a button
+        const classes = $(this).attr('class') || '';
+        const hasButtonClass = classes.toLowerCase().includes('button') || 
+                               classes.toLowerCase().includes('btn');
+        const hasButtonStyles = $(this).css('cursor') === 'pointer' || 
+                               $(this).css('padding') !== undefined;
+        const isClickable = $(this).attr('onclick') !== undefined || 
+                           $(this).attr('href') !== undefined;
+        
+        // Check if the text closely matches
+        const elementText = $(this).text().trim().toLowerCase();
+        const targetText = targetElement.text.trim().toLowerCase();
+        const textMatches = elementText.includes(targetText) || 
+                           targetText.includes(elementText);
+        
+        return textMatches && (hasButtonClass || hasButtonStyles || isClickable);
+      });
+      
+      if ($targetElement.length > 0) {
+        console.log(`Found button-like element with text: "${targetElement.text}"`);
+      }
+    }
+    
+    // 4. Fourth try: generic text-containing elements
+    if (!$targetElement || $targetElement.length === 0) {
+      $targetElement = $('*').filter(function() {
+        if ($(this).is('html, body, head, script, style')) {
+          return false;
+        }
+        
+        const elementText = $(this).text().trim().toLowerCase();
+        const targetText = targetElement.text.trim().toLowerCase();
+        
+        // Only match if this element itself contains the text directly (not just its children)
+        const childrenText = $(this).children().text().trim().toLowerCase();
+        const hasTextDirectly = elementText.includes(targetText) && 
+                               (elementText.length - childrenText.length > 0);
+        
+        return hasTextDirectly;
+      });
+      
+      if ($targetElement.length > 0) {
+        console.log(`Found generic element containing text: "${targetElement.text}"`);
+      }
     }
     
     // If no elements found, fall back to LLM-based approach
-    if ($targetElement.length === 0) {
+    if (!$targetElement || $targetElement.length === 0) {
       console.log(`⚠️ No exact element match found, falling back to LLM-based approach`);
       
       try {
@@ -788,70 +1306,159 @@ export const intelligentHtmlUpdate = async (file, instruction) => {
       }
     }
     
+    // If we found multiple matches, use the first one but log a warning
+    if ($targetElement.length > 1) {
+      console.warn(`⚠️ Found ${$targetElement.length} matching elements, using the first one`);
+      // Keep only the first match
+      $targetElement = $targetElement.first();
+    }
+    
     console.log(`✅ Found matching element: ${$targetElement.length > 0}`);
     
-    // Store original HTML for diffing
+    // Store original HTML for comparison
     const originalHtml = $.html();
     const originalElementHtml = $.html($targetElement);
     console.log(`Original element HTML: ${originalElementHtml.substring(0, 100)}...`);
     
-    // Apply the requested changes
-    if (targetAction.type === 'color' || targetAction.type === 'colour') {
-      if (targetAction.property === 'background' || targetAction.property === 'bg') {
-        $targetElement.css('background-color', targetAction.value);
-      } else {
-        $targetElement.css('color', targetAction.value);
+    // NEW: Use Claude to design the element change
+    let modifiedElementHtml;
+    try {
+      // Send the original element to Claude for design modification
+      modifiedElementHtml = await designElementChange(originalElementHtml, instruction);
+    } catch (claudeError) {
+      console.warn(`⚠️ Claude design failed, falling back to basic modifications: ${claudeError.message}`);
+      
+      // Apply the requested changes using Cheerio as fallback
+      if (targetAction.type === 'color' || targetAction.type === 'colour') {
+        if (targetAction.property === 'background-color' || targetAction.property === 'bg') {
+          $targetElement.css('background-color', targetAction.value);
+        } else {
+          $targetElement.css('color', targetAction.value);
+        }
+      } else if (targetAction.type === 'style') {
+        $targetElement.css(targetAction.property, targetAction.value);
+      } else if (targetAction.type === 'text') {
+        $targetElement.text(targetAction.value);
+      } else if (targetAction.type === 'class') {
+        if (targetAction.operation === 'add') {
+          $targetElement.addClass(targetAction.value);
+        } else if (targetAction.operation === 'remove') {
+          $targetElement.removeClass(targetAction.value);
+        }
+      } else if (targetAction.type === 'attribute') {
+        $targetElement.attr(targetAction.property, targetAction.value);
       }
-    } else if (targetAction.type === 'style') {
-      $targetElement.css(targetAction.property, targetAction.value);
-    } else if (targetAction.type === 'text') {
-      $targetElement.text(targetAction.value);
-    } else if (targetAction.type === 'class') {
-      if (targetAction.operation === 'add') {
-        $targetElement.addClass(targetAction.value);
-      } else if (targetAction.operation === 'remove') {
-        $targetElement.removeClass(targetAction.value);
-      }
-    } else if (targetAction.type === 'attribute') {
-      $targetElement.attr(targetAction.property, targetAction.value);
+      
+      // Get the modified HTML
+      modifiedElementHtml = $.html($targetElement);
     }
     
-    // Get the modified HTML
-    const modifiedElementHtml = $.html($targetElement);
     console.log(`Modified element HTML: ${modifiedElementHtml.substring(0, 100)}...`);
     
-    // Generate the updated HTML
-    const updatedHtml = $.html();
+    // Improved element replacement approach
     
-    // Create a diff to verify changes were made
-    const diff = dmp.diff_main(originalHtml, updatedHtml);
-    if (diff.length <= 1) {
-      console.warn("⚠️ No changes detected in HTML after modification");
+    // 1. First try direct string replacement
+    let updatedContent = content.replace(originalElementHtml, modifiedElementHtml);
+    
+    // 2. If direct replacement failed, try DOM replacement
+    if (updatedContent === content) {
+      console.log("Direct string replacement failed, trying DOM replacement");
       
-      // Fall back to direct element replacement if no diff detected
-      const updatedContent = content.replace(
-        originalElementHtml,
-        modifiedElementHtml
-      );
+      // Create a new DOM with the content
+      const $dom = cheerio.load(content);
       
-      // Write the updated content back to the file
-      await fs.writeFile(filePath, updatedContent, 'utf-8');
-    } else {
-      // Write the modified content back to the file
-      await fs.writeFile(filePath, updatedHtml, 'utf-8');
+      // Find the element in the new DOM
+      let $elementToReplace;
+      
+      // Try to find by similar text content
+      const targetText = targetElement.text.trim();
+      $elementToReplace = $dom(`*:contains("${targetText}")`).filter(function() {
+        // Skip html, body, etc.
+        if ($dom(this).is('html, body, head, script, style')) {
+          return false;
+        }
+        
+        // Check if text content matches
+        const text = $dom(this).text().trim();
+        return text.includes(targetText) || targetText.includes(text);
+      });
+      
+      if ($elementToReplace.length > 1) {
+        console.log(`Found ${$elementToReplace.length} potential elements to replace, narrowing down`);
+        
+        // Try to narrow down by element type
+        const tagName = $targetElement.prop('tagName').toLowerCase();
+        const narrowed = $elementToReplace.filter(function() {
+          return $dom(this).prop('tagName').toLowerCase() === tagName;
+        });
+        
+        if (narrowed.length > 0) {
+          $elementToReplace = narrowed.first();
+        } else {
+          $elementToReplace = $elementToReplace.first();
+        }
+      } else if ($elementToReplace.length === 0) {
+        console.warn("Could not find element to replace in the DOM");
+        
+        // 3. If DOM replacement failed, try using serialized HTML search
+        // Look for a unique snippet of the original element
+        const snippets = [];
+        if (originalElementHtml.length > 30) {
+          // Extract a few unique-looking snippets from the original element
+          snippets.push(originalElementHtml.substring(0, 30));
+          snippets.push(originalElementHtml.substring(Math.floor(originalElementHtml.length / 2), 
+                                               Math.floor(originalElementHtml.length / 2) + 30));
+          
+          // Try to replace each snippet
+          let replacementSucceeded = false;
+          for (const snippet of snippets) {
+            if (content.includes(snippet)) {
+              const escapedSnippet = snippet.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const regexPattern = new RegExp(`[\\s\\S]*?(${escapedSnippet}[\\s\\S]*?)(?=<\\/${$targetElement.prop('tagName').toLowerCase()}>)`, 'i');
+              const match = content.match(regexPattern);
+              
+              if (match && match[1]) {
+                const fullMatch = match[1] + `</${$targetElement.prop('tagName').toLowerCase()}>`;
+                updatedContent = content.replace(fullMatch, modifiedElementHtml);
+                if (updatedContent !== content) {
+                  console.log("Successfully replaced element using snippet match");
+                  replacementSucceeded = true;
+                  break;
+                }
+              }
+            }
+          }
+          
+          if (!replacementSucceeded) {
+            console.error("All replacement attempts failed");
+            return {
+              success: false,
+              message: "Could not reliably update the element in the document"
+            };
+          }
+        }
+      } else {
+        // Replace the found element with the modified version
+        console.log("Replacing element in DOM");
+        $elementToReplace.replaceWith(modifiedElementHtml);
+        updatedContent = $dom.html();
+      }
     }
+    
+    // Write the updated content back to the file
+    await fs.writeFile(filePath, updatedContent, 'utf-8');
     
     // Restart the server
     await restartServer(baseDir);
     
     return { 
       success: true, 
-      message: `Successfully updated ${targetElement.type || 'element'} with text "${targetElement.text}" in ${file}`,
+      message: `Successfully updated ${targetElement.type || 'element'} with text "${targetElement.text}" in ${file} using Claude design`,
       serverUrl: `http://localhost:3030/scraped_website/`,
       update: {
         elementType: targetElement.type || 'element',
         identifier: targetElement.text,
-        change: `${targetAction.type}: ${targetAction.value}`
+        change: `Claude-designed update based on: "${instruction}"`
       }
     };
     
@@ -918,14 +1525,13 @@ function parseInstruction(instruction) {
     result.targetAction.value = makeMatch[2].trim();
     result.targetAction.type = 'color';
   } else {
-    // More complex parsing for other types of instructions
-    // Background color change
-    const bgColorMatch = instruction.match(/(?:change|set|make)\s+(?:the\s+)?(.*?)\s+(?:background|bg)\s+(?:colour|color)\s+(?:to\s+)?(\w+)/i);
+    // Background color change - improved pattern
+    const bgColorMatch = instruction.match(/(?:change|set|make|changed)\s+(?:the\s+)?(.*?)\s+(?:background|bg)\s+(?:colour|color)\s+(?:to\s+)?(\w+)/i);
     if (bgColorMatch) {
       result.targetElement.text = bgColorMatch[1].trim();
       result.targetAction.value = bgColorMatch[2].trim();
       result.targetAction.type = 'color';
-      result.targetAction.property = 'background';
+      result.targetAction.property = 'background-color'; // Explicitly use background-color
     }
     
     // Text content change
@@ -936,9 +1542,25 @@ function parseInstruction(instruction) {
       result.targetAction.type = 'text';
     }
     
+    // Redesign instruction
+    const redesignMatch = instruction.match(/redesign\s+(?:the\s+)?(.*?)(?:\s+to\s+|\s+$)/i);
+    if (redesignMatch) {
+      result.targetElement.text = redesignMatch[1].trim();
+      result.targetAction.type = 'redesign';
+      result.targetAction.value = instruction;
+    }
+    
+    // "Make X more Y" pattern (enhancement instructions)
+    const enhanceMatch = instruction.match(/make\s+(?:the\s+)?(.*?)\s+more\s+(\w+)/i);
+    if (enhanceMatch) {
+      result.targetElement.text = enhanceMatch[1].trim();
+      result.targetAction.type = 'enhance';
+      result.targetAction.value = enhanceMatch[2].trim();
+    }
+    
     // Generic style change
     const styleMatch = instruction.match(/(?:change|set|make)\s+(?:the\s+)?(.*?)\s+(\w+)\s+(?:to\s+)?(\w+)/i);
-    if (styleMatch) {
+    if (styleMatch && !result.targetElement.text) {
       result.targetElement.text = styleMatch[1].trim();
       result.targetAction.property = styleMatch[2].trim();
       result.targetAction.value = styleMatch[3].trim();
@@ -949,7 +1571,17 @@ function parseInstruction(instruction) {
   // Check if we have a valid element and action
   if (!result.targetElement.text || !result.targetAction.value) {
     console.warn(`⚠️ Could not fully parse instruction: "${instruction}"`);
+    
+    // Fallback: if we can't parse properly, extract any text that might be a button name
+    const buttonNameMatch = instruction.match(/(?:the\s+)([\w\s]+)(?:\s+button)/i);
+    if (buttonNameMatch) {
+      result.targetElement.text = buttonNameMatch[1].trim();
+      result.targetElement.type = 'button';
+      result.targetAction.type = 'redesign';
+      result.targetAction.value = instruction;
+    }
   }
   
+  console.log(`Parsed instruction result:`, JSON.stringify(result, null, 2));
   return result;
 }

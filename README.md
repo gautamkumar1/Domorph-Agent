@@ -7,6 +7,32 @@ Domorph-Agent is a powerful tool for scraping websites and making precise modifi
 - **Website Scraping**: Scrape any website and host it locally
 - **Intelligent HTML Updates**: Modify HTML elements using natural language instructions
 - **Precise Element Targeting**: Find and modify specific elements like buttons by their text content
+- **AI-Powered Design**: Uses Claude to intelligently redesign HTML elements based on natural language instructions
+- **Smart Context Management**: Breaks large HTML files into semantic chunks to provide Claude with the most relevant context for modifications
+
+## Natural Language Capabilities
+
+Domorph-Agent now supports v0-like natural language commands for modifying web pages. You can describe what you want to change in plain English, and the system will:
+
+1. Break the HTML into semantic chunks (navigation, main content, buttons, etc.)
+2. Identify the most relevant parts of the page for your request
+3. Send only the necessary context to Claude
+4. Apply the modifications precisely where needed
+
+### Examples of Natural Language Commands
+
+```
+@index.html make the Contact button color red
+@about.html change the main heading to "Our Amazing Team"
+@products.html update the pricing from $99 to $89
+@talk.html make the Send button background white and text black
+```
+
+The system handles these commands by:
+- Breaking the page into semantic chunks
+- Prioritizing chunks that contain elements matching keywords in your instruction
+- Sending Claude only the most relevant parts of the HTML to stay within context limits
+- Using several matching strategies to find the right elements to update
 
 ## HTML Update Commands
 
@@ -29,49 +55,61 @@ This will replace all occurrences of "Gautam" with "Amit" in the index.html file
 
 ### 2. Intelligent Element Updates
 
-Use this format for more complex, targeted modifications:
+For more precise updates to specific elements, use natural language:
 
 ```
-@filename.html instruction
+@filename.html instruction about what to change
 ```
-
-Where "instruction" is a natural language description of the change.
 
 Examples:
 ```
-@index.html make the Contact button color red
-@index.html changed the Fetch Subscription button colour to white
-@index.html set the header background color to blue
-@index.html change the Submit button text to "Send Now"
+@index.html change the Send button background to blue
+@about.html make the header text larger and bold
+@contact.html update the email address to contact@example.com
 ```
 
-## How It Works
+The system will:
+1. Parse your instruction
+2. Identify the target element
+3. Generate the appropriate HTML changes
+4. Apply them precisely
 
-The intelligent HTML update system works in the following way:
+## How Context Management Works
 
-1. **Parsing**: The system parses your natural language instruction to extract:
-   - The target element (e.g., "Contact button", "Fetch Subscription button")
-   - The modification to apply (e.g., "color red", "colour white")
+When dealing with large HTML files, the system:
 
-2. **Element Targeting**: The system uses Cheerio to find the exact element in the HTML:
-   - First tries exact text matching
-   - Falls back to partial text matching
-   - Also checks elements that might be styled as buttons (links, divs with button classes)
+1. **Chunks the HTML**: Breaks the HTML into semantic sections like navigation, main content, buttons, etc.
+2. **Prioritizes chunks**: Assigns importance scores based on relevance to your instruction
+3. **Builds a smart prompt**: Includes only the most relevant chunks to stay within Claude's context window
+4. **Preserves structure**: Maintains document metadata and relationship between elements
 
-3. **Modification**: The appropriate change is applied to the targeted element:
-   - Color changes (text or background)
-   - Style modifications
-   - Text content updates
-   - Class or attribute changes
+This approach allows for modifications to even very large HTML files that would otherwise exceed Claude's context limits.
 
-4. **Verification**: The system verifies that changes were made:
-   - Using diff-match-patch to detect differences
-   - Falls back to direct element replacement if needed
+## API
 
-5. **Fallback**: If the element can't be found using Cheerio, the system falls back to an LLM-based approach that:
-   - Uses Claude to find the relevant HTML snippet
-   - Uses Claude to update that snippet
-   - Replaces the snippet in the original HTML
+### `intelligentHtmlUpdate(file, instruction)`
+
+Updates HTML content based on natural language instructions.
+
+Parameters:
+- `file`: Path to the HTML file within scraped_website folder
+- `instruction`: Natural language instruction describing what to change
+
+Returns:
+- Object with success status, message, and server URL
+
+Example:
+```javascript
+const result = await intelligentHtmlUpdate('index.html', 'change the Get Started button color to blue');
+```
+
+## Setup
+
+1. Clone the repository
+2. Run `npm install` to install dependencies
+3. Set your Anthropic API key in the environment variable: `ANTHROPIC_API_KEY`
+4. Start the application
+5. Use the commands described above to modify your HTML files
 
 ## Technical Implementation
 
@@ -85,9 +123,23 @@ The system uses several key libraries:
   - Used to verify changes and ensure minimal modifications
   - Helps track changes between original and modified HTML
 
-- **Claude (Anthropic)**: AI-powered HTML analysis
-  - Used as a fallback for complex scenarios
-  - Helps identify relevant HTML snippets when direct targeting fails
+- **Claude (Anthropic)**: AI-powered HTML analysis and design
+  - Primary method for complex element redesign
+  - Used to analyze HTML structure and apply changes intelligently
+  - Maintains element functionality while improving appearance
+  - Used as a fallback for element identification when Cheerio fails
+
+## Advanced Design Capabilities
+
+With the Claude-powered design feature, you can request more complex and nuanced changes:
+
+- **Visual Styling**: "Make this button more prominent"
+- **Aesthetic Improvements**: "Make this card more modern looking" 
+- **Complex Color Changes**: "Change the button to a gradient from blue to purple"
+- **Layout Adjustments**: "Make this menu more compact"
+- **Responsive Design**: "Make this element mobile-friendly"
+
+The system intelligently interprets your design intent and applies appropriate HTML/CSS modifications while preserving the element's functionality and existing attributes.
 
 ## Getting Started
 
