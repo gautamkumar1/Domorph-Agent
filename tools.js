@@ -6,6 +6,8 @@ import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import pLimit from "p-limit";
 import express from "express";
+import * as cheerio from 'cheerio';
+import { diff_match_patch } from 'diff-match-patch';
 
 puppeteer.use(StealthPlugin());
 
@@ -17,6 +19,10 @@ const __dirname = path.dirname(__filename);
 
 const CONCURRENCY_LIMIT = 5;
 const limit = pLimit(CONCURRENCY_LIMIT);
+
+// Initialize diff-match-patch
+const dmp = new diff_match_patch();
+
 async function getFolderStructure(dir, base = "") {
   const entries = await fs.readdir(dir, { withFileTypes: true });
 
@@ -632,7 +638,7 @@ Modified snippet:`;
   }
 }
 
-// Modified intelligentHtmlUpdate function to use the snippet-based approach
+// Enhanced intelligentHtmlUpdate function using Cheerio
 export const intelligentHtmlUpdate = async (file, instruction) => {
   console.log(`🧠 Intelligent HTML Update - File: ${file}, Instruction: "${instruction}"`);
   
@@ -666,119 +672,188 @@ export const intelligentHtmlUpdate = async (file, instruction) => {
     const content = await fs.readFile(filePath, 'utf-8');
     console.log(`📄 Read file content (${content.length} chars)`);
     
-    try {
-      // STEP 1: Find the relevant HTML snippet
-      const snippetInfo = await findHtmlSnippet(content, instruction);
+    // Parse instruction to extract target element information
+    const { targetElement, targetAction } = parseInstruction(instruction);
+    console.log(`🔍 Parsed instruction: ${JSON.stringify({ targetElement, targetAction })}`);
+    
+    // Load HTML with Cheerio
+    const $ = cheerio.load(content);
+    
+    // Find the target element
+    let targetSelector;
+    let $targetElement;
+    
+    // Try to find button/element by exact text match
+    if (targetElement.type === 'button') {
+      $targetElement = $(`button:contains("${targetElement.text}")`).filter(function() {
+        return $(this).text().trim() === targetElement.text.trim();
+      });
       
-      // STEP 2: Update only that snippet
-      const updatedSnippet = await updateHtmlSnippet(snippetInfo.snippet, instruction);
-      
-      // STEP 3: Replace the snippet in the original HTML
-      // Split the HTML into lines for easier replacement
-      const lines = content.split('\n');
-      
-      // Create a regex to find the exact snippet
-      const escapedSnippet = snippetInfo.snippet.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const snippetRegex = new RegExp(escapedSnippet, 'g');
-      
-      // Replace the snippet in the original HTML
-      const modifiedContent = content.replace(snippetRegex, updatedSnippet);
-      
-      // Check if any change was made
-      if (modifiedContent === content) {
-        console.warn("⚠️ Regex replacement didn't work, falling back to approximate line replacement");
-        
-        // Fallback approach: use the approximate line numbers
-        const lineStart = Math.max(0, snippetInfo.lineStart - 1); // 0-indexed
-        const lineEnd = Math.min(lines.length, snippetInfo.lineEnd);
-        
-        // Replace the relevant lines
-        const beforeLines = lines.slice(0, lineStart);
-        const afterLines = lines.slice(lineEnd);
-        
-        // Construct the new content
-        const newContent = [...beforeLines, updatedSnippet, ...afterLines].join('\n');
-        
-        // Write the modified content back to the file
-        await fs.writeFile(filePath, newContent, 'utf-8');
-      } else {
-        // Write the modified content back to the file
-        await fs.writeFile(filePath, modifiedContent, 'utf-8');
+      // If exact match failed, try partial match
+      if ($targetElement.length === 0) {
+        $targetElement = $(`button:contains("${targetElement.text}")`);
       }
       
-      console.log(`✅ Successfully updated ${file} with targeted change`);
-      
-      // Restart the server if it's running
-      if (websiteServer) {
-        console.log("🔄 Restarting scraped website server...");
-        await new Promise(resolve => websiteServer.close(resolve));
-        
-        // Start the server on port 3030
-        const app = express();
-        app.use('/scraped_website', express.static(baseDir));
-        
-        // Create an index route that redirects to the scraped website
-        app.get('/', (req, res) => {
-          res.redirect('/scraped_website/index.html');
-        });
-        
-        const port = 3030;
-        websiteServer = app.listen(port, () => {
-          console.log(`✅ Scraped website restarted at http://localhost:${port}/scraped_website/`);
-        });
+      // Try other elements that might be styled as buttons
+      if ($targetElement.length === 0) {
+        $targetElement = $(`a:contains("${targetElement.text}")`)
+          .add(`div:contains("${targetElement.text}")`)
+          .add(`span:contains("${targetElement.text}")`)
+          .filter(function() {
+            // Check if this element likely represents a button
+            const classes = $(this).attr('class') || '';
+            const hasButtonClass = classes.toLowerCase().includes('button') || 
+                                  classes.toLowerCase().includes('btn');
+            const hasButtonStyles = $(this).css('cursor') === 'pointer' || 
+                                   $(this).css('padding') !== undefined;
+            const isClickable = $(this).attr('onclick') !== undefined || 
+                               $(this).attr('href') !== undefined;
+            
+            // Check if the text closely matches
+            const elementText = $(this).text().trim();
+            const targetText = targetElement.text.trim();
+            const textMatches = elementText.includes(targetText) || 
+                               targetText.includes(elementText);
+            
+            return textMatches && (hasButtonClass || hasButtonStyles || isClickable);
+          });
       }
+    } else {
+      // Generic element search based on text content
+      $targetElement = $(`*:contains("${targetElement.text}")`).filter(function() {
+        const elementText = $(this).text().trim();
+        return elementText === targetElement.text.trim() && 
+               !$(this).children().text().includes(targetElement.text);
+      });
+    }
+    
+    // If no elements found, fall back to LLM-based approach
+    if ($targetElement.length === 0) {
+      console.log(`⚠️ No exact element match found, falling back to LLM-based approach`);
       
-      return { 
-        success: true, 
-        message: `Successfully updated ${file} based on instruction: "${instruction}"`,
-        serverUrl: `http://localhost:3030/scraped_website/`,
-        update: {
-          elementType: snippetInfo.elementType,
-          identifier: snippetInfo.elementIdentifier,
-          change: snippetInfo.modificationNeeded
-        }
-      };
-      
-    } catch (error) {
-      console.error(`❌ Error with intelligent HTML update:`, error);
-      
-      // Fall back to simulation for testing
-      console.log("⚠️ Falling back to simulation due to error");
       try {
-        const modifiedContent = simulateHtmlModification(content, instruction);
+        // Use the existing LLM-based approach
+        const snippetInfo = await findHtmlSnippet(content, instruction);
+        const updatedSnippet = await updateHtmlSnippet(snippetInfo.snippet, instruction);
         
-        // Write the updated content back to the file
-        await fs.writeFile(filePath, modifiedContent, 'utf-8');
+        // Create a regex to find the exact snippet
+        const escapedSnippet = snippetInfo.snippet.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const snippetRegex = new RegExp(escapedSnippet, 'g');
         
-        // Restart server if running
-        if (websiteServer) {
-          console.log("🔄 Restarting scraped website server...");
-          await new Promise(resolve => websiteServer.close(resolve));
+        // Replace the snippet in the original HTML
+        const modifiedContent = content.replace(snippetRegex, updatedSnippet);
+        
+        // Check if any change was made
+        if (modifiedContent === content) {
+          console.warn("⚠️ Regex replacement didn't work, falling back to approximate line replacement");
           
-          const app = express();
-          app.use('/scraped_website', express.static(baseDir));
-          app.get('/', (req, res) => {
-            res.redirect('/scraped_website/index.html');
-          });
+          // Fallback approach: use the approximate line numbers
+          const lines = content.split('\n');
+          const lineStart = Math.max(0, snippetInfo.lineStart - 1); // 0-indexed
+          const lineEnd = Math.min(lines.length, snippetInfo.lineEnd);
           
-          const port = 3030;
-          websiteServer = app.listen(port, () => {
-            console.log(`✅ Scraped website restarted at http://localhost:${port}/scraped_website/`);
-          });
+          // Replace the relevant lines
+          const beforeLines = lines.slice(0, lineStart);
+          const afterLines = lines.slice(lineEnd);
+          
+          // Construct the new content
+          const newContent = [...beforeLines, updatedSnippet, ...afterLines].join('\n');
+          
+          // Write the modified content back to the file
+          await fs.writeFile(filePath, newContent, 'utf-8');
+        } else {
+          // Write the modified content back to the file
+          await fs.writeFile(filePath, modifiedContent, 'utf-8');
         }
+        
+        // Restart the server
+        await restartServer(baseDir);
         
         return { 
           success: true, 
-          message: `Applied simulated change to ${file} (fallback mode)`,
-          serverUrl: `http://localhost:3030/scraped_website/`
+          message: `Successfully updated ${file} based on instruction: "${instruction}"`,
+          serverUrl: `http://localhost:3030/scraped_website/`,
+          update: {
+            elementType: snippetInfo.elementType,
+            identifier: snippetInfo.elementIdentifier,
+            change: snippetInfo.modificationNeeded
+          }
         };
-      } catch (simError) {
-        return {
-          success: false,
-          message: `Error updating HTML: ${error.message}`
+      } catch (error) {
+        console.error(`❌ Error with fallback approach:`, error);
+        return { 
+          success: false, 
+          message: `Failed to find matching element for: "${instruction}"` 
         };
       }
     }
+    
+    console.log(`✅ Found matching element: ${$targetElement.length > 0}`);
+    
+    // Store original HTML for diffing
+    const originalHtml = $.html();
+    const originalElementHtml = $.html($targetElement);
+    console.log(`Original element HTML: ${originalElementHtml.substring(0, 100)}...`);
+    
+    // Apply the requested changes
+    if (targetAction.type === 'color' || targetAction.type === 'colour') {
+      if (targetAction.property === 'background' || targetAction.property === 'bg') {
+        $targetElement.css('background-color', targetAction.value);
+      } else {
+        $targetElement.css('color', targetAction.value);
+      }
+    } else if (targetAction.type === 'style') {
+      $targetElement.css(targetAction.property, targetAction.value);
+    } else if (targetAction.type === 'text') {
+      $targetElement.text(targetAction.value);
+    } else if (targetAction.type === 'class') {
+      if (targetAction.operation === 'add') {
+        $targetElement.addClass(targetAction.value);
+      } else if (targetAction.operation === 'remove') {
+        $targetElement.removeClass(targetAction.value);
+      }
+    } else if (targetAction.type === 'attribute') {
+      $targetElement.attr(targetAction.property, targetAction.value);
+    }
+    
+    // Get the modified HTML
+    const modifiedElementHtml = $.html($targetElement);
+    console.log(`Modified element HTML: ${modifiedElementHtml.substring(0, 100)}...`);
+    
+    // Generate the updated HTML
+    const updatedHtml = $.html();
+    
+    // Create a diff to verify changes were made
+    const diff = dmp.diff_main(originalHtml, updatedHtml);
+    if (diff.length <= 1) {
+      console.warn("⚠️ No changes detected in HTML after modification");
+      
+      // Fall back to direct element replacement if no diff detected
+      const updatedContent = content.replace(
+        originalElementHtml,
+        modifiedElementHtml
+      );
+      
+      // Write the updated content back to the file
+      await fs.writeFile(filePath, updatedContent, 'utf-8');
+    } else {
+      // Write the modified content back to the file
+      await fs.writeFile(filePath, updatedHtml, 'utf-8');
+    }
+    
+    // Restart the server
+    await restartServer(baseDir);
+    
+    return { 
+      success: true, 
+      message: `Successfully updated ${targetElement.type || 'element'} with text "${targetElement.text}" in ${file}`,
+      serverUrl: `http://localhost:3030/scraped_website/`,
+      update: {
+        elementType: targetElement.type || 'element',
+        identifier: targetElement.text,
+        change: `${targetAction.type}: ${targetAction.value}`
+      }
+    };
     
   } catch (error) {
     console.error("❌ Error in intelligent HTML update:", error);
@@ -789,276 +864,92 @@ export const intelligentHtmlUpdate = async (file, instruction) => {
   }
 };
 
-// Helper function to apply targeted changes to HTML content
-function applyTargetedHtmlChange(html, elementAnalysis) {
-  const {
-    targetElementType,
-    targetElementIdentifier,
-    modificationType,
-    modification,
-    matchType,
-    isGlobalChange = false
-  } = elementAnalysis;
-  
-  console.log(`🔍 Applying targeted HTML change:
-   - Element type: ${targetElementType}
-   - Identifier: ${targetElementIdentifier}
-   - Change type: ${modificationType}
-   - Modification: ${modification}
-   - Match type: ${matchType}
-   - Global: ${isGlobalChange}`);
-  
-  // Create different matching patterns based on the match type
-  let pattern;
-  let replacement;
-  
-  try {
-    switch (matchType) {
-      case 'exactText':
-        // Match by exact text content
-        pattern = new RegExp(`(<${targetElementType}[^>]*>)(${targetElementIdentifier})(</${targetElementType}>)`, isGlobalChange ? 'g' : '');
-        break;
-        
-      case 'containsText':
-        // Match by contained text
-        pattern = new RegExp(`(<${targetElementType}[^>]*>)([^<]*${targetElementIdentifier}[^<]*)(</${targetElementType}>)`, isGlobalChange ? 'g' : '');
-        break;
-        
-      case 'id':
-        // Match by ID attribute
-        pattern = new RegExp(`(<${targetElementType}[^>]*id=["']${targetElementIdentifier}["'][^>]*)(>)`, isGlobalChange ? 'g' : '');
-        break;
-        
-      case 'class':
-        // Match by class attribute
-        pattern = new RegExp(`(<${targetElementType}[^>]*class=["'][^"']*${targetElementIdentifier}[^"']*["'][^>]*)(>)`, isGlobalChange ? 'g' : '');
-        break;
-        
-      case 'selector':
-        // This is more complex - would require a full DOM parser
-        // For now, we'll just handle it as a fallback
-        console.warn("⚠️ Complex selector matching is not fully supported");
-        pattern = new RegExp(`(<${targetElementType}[^>]*)(>)`, isGlobalChange ? 'g' : '');
-        break;
-        
-      default:
-        // Default fallback - match by element type
-        console.warn(`⚠️ Unknown match type '${matchType}', falling back to element type match`);
-        pattern = new RegExp(`(<${targetElementType}[^>]*)(>)`, isGlobalChange ? 'g' : '');
-    }
+// Helper function to restart the server
+async function restartServer(baseDir) {
+  if (websiteServer) {
+    console.log("🔄 Restarting scraped website server...");
+    await new Promise(resolve => websiteServer.close(resolve));
     
-    // Create the replacement based on the modification type
-    switch (modificationType) {
-      case 'style':
-        // Add or modify style attribute
-        replacement = (match, p1, p2, p3) => {
-          if (p3) {
-            // For patterns with 3 capture groups (like text content patterns)
-            if (p1.includes('style="')) {
-              // Modify existing style
-              return p1.replace(/style="([^"]*)"/, `style="$1 ${modification}"`) + p2 + p3;
-            } else {
-              // Add new style
-              return p1.replace(/>$/, ` style="${modification}">`) + p2 + p3;
-            }
-          } else {
-            // For patterns with 2 capture groups (like attribute patterns)
-            if (p1.includes('style="')) {
-              // Modify existing style
-              return p1.replace(/style="([^"]*)"/, `style="$1 ${modification}"`) + p2;
-            } else {
-              // Add new style
-              return `${p1} style="${modification}"${p2}`;
-            }
-          }
-        };
-        break;
-        
-      case 'attribute':
-        // Add or modify an attribute
-        const [attrName, attrValue] = modification.split('=');
-        replacement = (match, p1, p2, p3) => {
-          if (p3) {
-            // For patterns with 3 capture groups
-            if (p1.includes(`${attrName}="`)) {
-              // Modify existing attribute
-              return p1.replace(new RegExp(`${attrName}="[^"]*"`), `${attrName}=${attrValue}`) + p2 + p3;
-            } else {
-              // Add new attribute
-              return p1.replace(/>$/, ` ${attrName}=${attrValue}>`) + p2 + p3;
-            }
-          } else {
-            // For patterns with 2 capture groups
-            if (p1.includes(`${attrName}="`)) {
-              // Modify existing attribute
-              return p1.replace(new RegExp(`${attrName}="[^"]*"`), `${attrName}=${attrValue}`) + p2;
-            } else {
-              // Add new attribute
-              return `${p1} ${attrName}=${attrValue}${p2}`;
-            }
-          }
-        };
-        break;
-        
-      case 'text':
-        // Replace text content
-        if (matchType === 'exactText' || matchType === 'containsText') {
-          replacement = `$1${modification}$3`;
-        } else {
-          console.error("❌ Text modification requires exactText or containsText match type");
-          return null;
-        }
-        break;
-        
-      case 'addClass':
-        // Add a class to the element
-        replacement = (match, p1, p2, p3) => {
-          if (p3) {
-            if (p1.includes('class="')) {
-              // Add to existing class
-              return p1.replace(/class="([^"]*)"/, `class="$1 ${modification}"`) + p2 + p3;
-            } else {
-              // Add new class attribute
-              return p1.replace(/>$/, ` class="${modification}">`) + p2 + p3;
-            }
-          } else {
-            if (p1.includes('class="')) {
-              // Add to existing class
-              return p1.replace(/class="([^"]*)"/, `class="$1 ${modification}"`) + p2;
-            } else {
-              // Add new class attribute
-              return `${p1} class="${modification}"${p2}`;
-            }
-          }
-        };
-        break;
-        
-      default:
-        console.error(`❌ Unknown modification type: ${modificationType}`);
-        return null;
-    }
+    // Start the server on port 3030
+    const app = express();
+    app.use('/scraped_website', express.static(baseDir));
     
-    // Apply the replacement
-    const updatedHtml = html.replace(pattern, replacement);
+    // Create an index route that redirects to the scraped website
+    app.get('/', (req, res) => {
+      res.redirect('/scraped_website/index.html');
+    });
     
-    // Check if any change was made
-    if (updatedHtml === html) {
-      console.warn("⚠️ No changes were made to the HTML");
-      return simulateHtmlModification(html, `change ${targetElementType} with ${targetElementIdentifier} to have ${modification}`);
-    }
-    
-    console.log(`✅ Successfully applied targeted change to HTML`);
-    return updatedHtml;
-    
-  } catch (error) {
-    console.error(`❌ Error applying targeted change:`, error);
-    return null;
+    const port = 3030;
+    websiteServer = app.listen(port, () => {
+      console.log(`✅ Scraped website restarted at http://localhost:${port}/scraped_website/`);
+    });
+  } else {
+    console.log("⚠️ Website server not running, no restart needed");
   }
 }
 
-// Temporary helper function - this would be replaced with actual LLM call
-function simulateHtmlModification(html, instruction) {
-  console.log(`🔄 Simulating HTML modification for instruction: "${instruction}"`);
+// Helper function to parse the instruction into target element and action
+function parseInstruction(instruction) {
+  console.log(`Parsing instruction: "${instruction}"`);
   
-  // 1. Button color changes
-  if (instruction.match(/button.*color.*red|make.*button.*red/i)) {
-    console.log("📝 Simulation: Changing button color to red");
+  // Default values
+  const result = {
+    targetElement: {
+      type: 'button',
+      text: ''
+    },
+    targetAction: {
+      type: 'color',
+      value: '',
+      property: 'color'
+    }
+  };
+  
+  // Extract button/element text
+  const changedMatch = instruction.match(/changed\s+the\s+(.*?)\s+button\s+(?:colour|color)\s+to\s+(\w+)/i);
+  const makeMatch = instruction.match(/make\s+the\s+(.*?)\s+button\s+(?:colour|color)\s+(\w+)/i);
+  
+  if (changedMatch) {
+    result.targetElement.text = changedMatch[1].trim();
+    result.targetAction.value = changedMatch[2].trim();
+    result.targetAction.type = 'color';
+  } else if (makeMatch) {
+    result.targetElement.text = makeMatch[1].trim();
+    result.targetAction.value = makeMatch[2].trim();
+    result.targetAction.type = 'color';
+  } else {
+    // More complex parsing for other types of instructions
+    // Background color change
+    const bgColorMatch = instruction.match(/(?:change|set|make)\s+(?:the\s+)?(.*?)\s+(?:background|bg)\s+(?:colour|color)\s+(?:to\s+)?(\w+)/i);
+    if (bgColorMatch) {
+      result.targetElement.text = bgColorMatch[1].trim();
+      result.targetAction.value = bgColorMatch[2].trim();
+      result.targetAction.type = 'color';
+      result.targetAction.property = 'background';
+    }
     
-    if (instruction.match(/contact/i)) {
-      // Change contact button color
-      return html.replace(
-        /(<button[^>]*>)([^<]*Contact[^<]*<\/button>)/i,
-        '$1<span style="color: red;">$2</span>'
-      );
-    } else {
-      // Change any button color
-      return html.replace(
-        /(<button[^>]*)(>)/i,
-        '$1 style="color: red;"$2'
-      );
+    // Text content change
+    const textMatch = instruction.match(/(?:change|set|make)\s+(?:the\s+)?(.*?)\s+text\s+(?:to\s+)?["'](.*)["']/i);
+    if (textMatch) {
+      result.targetElement.text = textMatch[1].trim();
+      result.targetAction.value = textMatch[2].trim();
+      result.targetAction.type = 'text';
+    }
+    
+    // Generic style change
+    const styleMatch = instruction.match(/(?:change|set|make)\s+(?:the\s+)?(.*?)\s+(\w+)\s+(?:to\s+)?(\w+)/i);
+    if (styleMatch) {
+      result.targetElement.text = styleMatch[1].trim();
+      result.targetAction.property = styleMatch[2].trim();
+      result.targetAction.value = styleMatch[3].trim();
+      result.targetAction.type = 'style';
     }
   }
   
-  // 2. Background color changes
-  if (instruction.match(/background.*color|bg.*color/i)) {
-    console.log("📝 Simulation: Changing background color");
-    
-    // Extract color from instruction
-    const colorMatch = instruction.match(/to\s+(\w+)$/i);
-    const color = colorMatch ? colorMatch[1] : "blue";
-    
-    if (instruction.match(/body|page/i)) {
-      // Change body background
-      return html.replace(
-        /<body[^>]*>/i,
-        `<body style="background-color: ${color};">`
-      );
-    } else if (instruction.match(/header/i)) {
-      // Change header background
-      return html.replace(
-        /(<header[^>]*)(>)/i,
-        `$1 style="background-color: ${color};"$2`
-      );
-    } else {
-      // Change div background
-      return html.replace(
-        /(<div[^>]*)(>)/i,
-        `$1 style="background-color: ${color};"$2`
-      );
-    }
+  // Check if we have a valid element and action
+  if (!result.targetElement.text || !result.targetAction.value) {
+    console.warn(`⚠️ Could not fully parse instruction: "${instruction}"`);
   }
   
-  // 3. Font size changes
-  if (instruction.match(/font.*size|text.*size|larger|smaller/i)) {
-    console.log("📝 Simulation: Changing font size");
-    
-    // Extract size or default to "larger"
-    const sizeMatch = instruction.match(/to\s+([\d.]+)(px|em|rem|pt|%)/i);
-    const size = sizeMatch ? `${sizeMatch[1]}${sizeMatch[2]}` : "1.5em";
-    
-    if (instruction.match(/heading|title|h1/i)) {
-      // Change heading font size
-      return html.replace(
-        /(<h\d[^>]*)(>)/i,
-        `$1 style="font-size: ${size};"$2`
-      );
-    } else if (instruction.match(/paragraph|text/i)) {
-      // Change paragraph font size
-      return html.replace(
-        /(<p[^>]*)(>)/i,
-        `$1 style="font-size: ${size};"$2`
-      );
-    } else {
-      // Change any text element font size
-      return html.replace(
-        /(<[a-z]+[^>]*)(>)/i,
-        `$1 style="font-size: ${size};"$2`
-      );
-    }
-  }
-  
-  // 4. Add a new element
-  if (instruction.match(/add|insert|append/i)) {
-    console.log("📝 Simulation: Adding a new element");
-    
-    if (instruction.match(/button/i)) {
-      // Add a new button
-      const buttonText = instruction.match(/with\s+text\s+"([^"]+)"/i)?.[1] || "Click me";
-      return html.replace(
-        /<\/body>/i,
-        `<div style="margin: 20px;"><button style="padding: 10px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">${buttonText}</button></div>\n</body>`
-      );
-    } else if (instruction.match(/paragraph|text/i)) {
-      // Add a new paragraph
-      const paragraphText = instruction.match(/with\s+text\s+"([^"]+)"/i)?.[1] || "This is a new paragraph.";
-      return html.replace(
-        /<\/body>/i,
-        `<div style="margin: 20px;"><p>${paragraphText}</p></div>\n</body>`
-      );
-    }
-  }
-  
-  // If no pattern matches, return the original HTML
-  console.log("⚠️ No simulation pattern matched, returning original HTML");
-  return html;
+  return result;
 }

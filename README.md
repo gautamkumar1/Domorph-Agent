@@ -1,12 +1,115 @@
-# Domorph Agent - Website Scraper and Editor
+# Domorph-Agent: Intelligent HTML Update System
 
-An intelligent agent powered by Claude that can scrape websites and edit their HTML content.
+Domorph-Agent is a powerful tool for scraping websites and making precise modifications to the HTML content using natural language instructions.
 
 ## Features
 
-- Scrape any website and host it locally
-- Update HTML content in scraped websites with simple text commands
-- Chat with an AI assistant for help with web tasks
+- **Website Scraping**: Scrape any website and host it locally
+- **Intelligent HTML Updates**: Modify HTML elements using natural language instructions
+- **Precise Element Targeting**: Find and modify specific elements like buttons by their text content
+
+## HTML Update Commands
+
+There are two ways to update HTML in the scraped website:
+
+### 1. Simple Text Replacement
+
+Use this format for direct text replacement:
+
+```
+@filename.html changed text to newtext
+```
+
+Example:
+```
+@index.html changed Gautam to Amit
+```
+
+This will replace all occurrences of "Gautam" with "Amit" in the index.html file.
+
+### 2. Intelligent Element Updates
+
+Use this format for more complex, targeted modifications:
+
+```
+@filename.html instruction
+```
+
+Where "instruction" is a natural language description of the change.
+
+Examples:
+```
+@index.html make the Contact button color red
+@index.html changed the Fetch Subscription button colour to white
+@index.html set the header background color to blue
+@index.html change the Submit button text to "Send Now"
+```
+
+## How It Works
+
+The intelligent HTML update system works in the following way:
+
+1. **Parsing**: The system parses your natural language instruction to extract:
+   - The target element (e.g., "Contact button", "Fetch Subscription button")
+   - The modification to apply (e.g., "color red", "colour white")
+
+2. **Element Targeting**: The system uses Cheerio to find the exact element in the HTML:
+   - First tries exact text matching
+   - Falls back to partial text matching
+   - Also checks elements that might be styled as buttons (links, divs with button classes)
+
+3. **Modification**: The appropriate change is applied to the targeted element:
+   - Color changes (text or background)
+   - Style modifications
+   - Text content updates
+   - Class or attribute changes
+
+4. **Verification**: The system verifies that changes were made:
+   - Using diff-match-patch to detect differences
+   - Falls back to direct element replacement if needed
+
+5. **Fallback**: If the element can't be found using Cheerio, the system falls back to an LLM-based approach that:
+   - Uses Claude to find the relevant HTML snippet
+   - Uses Claude to update that snippet
+   - Replaces the snippet in the original HTML
+
+## Technical Implementation
+
+The system uses several key libraries:
+
+- **Cheerio**: jQuery-like HTML parsing and manipulation
+  - Used for precise element selection and modification
+  - Ideal for basic HTML element edits
+
+- **diff-match-patch**: Text diffing and patching
+  - Used to verify changes and ensure minimal modifications
+  - Helps track changes between original and modified HTML
+
+- **Claude (Anthropic)**: AI-powered HTML analysis
+  - Used as a fallback for complex scenarios
+  - Helps identify relevant HTML snippets when direct targeting fails
+
+## Getting Started
+
+1. Ensure you have Node.js installed
+2. Install dependencies: `npm install`
+3. Set your Anthropic API key: `export ANTHROPIC_API_KEY=your_key_here`
+4. Run the server: `npm start`
+5. Access the UI at http://localhost:3000
+
+## Example Usage
+
+1. Scrape a website:
+   ```
+   https://example.com
+   ```
+
+2. Update an element:
+   ```
+   @index.html changed the Fetch Subscription button colour to white
+   ```
+
+3. View the updated website at the provided link (usually http://localhost:3030/scraped_website/)
 
 ## Prerequisites
 
@@ -119,31 +222,6 @@ The agent will:
 2. Replace all occurrences of "oldtext" with "newtext"
 3. Restart the website server
 4. Return information about the update
-
-## How It Works
-
-### System Components
-
-1. **Agent (agent.js)**: The AI assistant that processes user messages and calls the appropriate tools
-2. **Tools (tools.js)**: Functions for scraping websites and editing HTML content
-3. **Routes (route.js)**: API endpoints for interacting with the agent
-4. **System Prompt (system-prompt.js)**: Instructions for the AI assistant
-
-### Workflow
-
-1. User sends a message to the `/chat` endpoint
-2. The message is processed to detect commands (URLs or HTML update commands)
-3. The agent processes the message and calls the appropriate tools
-4. The results are returned to the user
-
-### Console Logging
-
-The system includes extensive console logging to track:
-- Incoming user messages
-- Tool execution
-- Website scraping progress
-- HTML updates
-- Server status
 
 ## Troubleshooting
 

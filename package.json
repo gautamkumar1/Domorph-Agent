@@ -17,6 +17,8 @@
     "@langchain/community": "^0.0.34",
     "@langchain/core": "^0.3.56",
     "@langchain/langgraph": "^0.2.72",
+    "cheerio": "^1.0.0",
+    "diff-match-patch": "^1.0.5",
     "express": "^4.21.2",
     "node-fetch": "^3.3.2",
     "p-limit": "^4.0.0",
